@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: snmp-monitor-postgres
+    environment:
+      POSTGRES_DB: snmp_monitor
+      POSTGRES_USER: snmp
+      POSTGRES_PASSWORD: snmp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+      - ./postgres/seed.sql:/docker-entrypoint-initdb.d/002-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U snmp -d snmp_monitor"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api-gateway:
+    build:
+      context: ./api-gateway
+    container_name: snmp-monitor-api
+    environment:
+      PORT: 3000
+      HOST: 0.0.0.0
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      WEB_ORIGIN: http://localhost:15173
+    ports:
+      - "13000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  collector-go:
+    build:
+      context: ./collector-go
+    container_name: snmp-monitor-collector
+    environment:
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      COLLECT_INTERVAL_SECONDS: 60
+      SNMP_TIMEOUT_SECONDS: 3
+      SNMP_RETRIES: 1
+      WORKER_COUNT: 16
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web-vue3:
+    build:
+      context: ./web-vue3
+    container_name: snmp-monitor-web
+    ports:
+      - "15173:80"
+    depends_on:
+      - api-gateway
+
+volumes:
+  postgres-data:
