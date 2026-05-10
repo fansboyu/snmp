@@ -28,3 +28,9 @@ collector-go/snmp-monitor
 Thumbs.db
 .idea/
 .vscode/
+
+# Local working notes / generated artifacts
+backups/
+design-mockups/
+原则.txt
+原则.txt.bak
