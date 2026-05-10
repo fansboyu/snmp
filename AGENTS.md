@@ -14,8 +14,9 @@
 | 路径 | 说明 |
 | --- | --- |
 | `docker-compose.yml` | 本地 Docker 编排入口 |
+| `docker/` | 内置 SNMP Agent 测试容器配置 |
 | `postgres/schema.sql` | 数据库表结构、索引和默认模板/指标 |
-| `postgres/seed.sql` | 默认设备、CPU、接口、告警和演示样本 |
+| `postgres/seed.sql` | 清理动态数据并写入内置 SNMP Agent 设备 |
 | `api-gateway/src/` | Fastify API 服务 |
 | `collector-go/internal/` | SNMP 采集器核心逻辑 |
 | `web-vue3/src/` | Vue 3 前端源码 |
@@ -76,6 +77,7 @@ node --check src/routes/<route-file>.js
 - 告警中心：维护 CPU 阈值和接口 Down 规则，查看 active/resolved 告警事件。
 - 图表展示：Dashboard 展示 CPU、接口入/出流量、接口状态、采集样本趋势。
 - SNMP 采集：按设备分组绑定的模板采集标量指标和接口表指标。
+- 内置 SNMP Agent：Docker Compose 启动 v2c/v3 测试设备，初始化后采集器直接采集真实容器数据。
 
 ## 数据库约定
 
@@ -90,6 +92,8 @@ node --check src/routes/<route-file>.js
 - `alert_rules` 保存告警规则，当前支持 `cpu_threshold` 和 `interface_down`。
 - `alert_events` 保存告警事件，`status` 使用 `active` 或 `resolved`。
 - 删除设备时依赖外键级联删除相关样本、接口数据和告警数据。
+- `postgres/seed.sql` 会清空设备、样本、接口和告警事件动态数据，再写入内置 SNMP Agent 设备。
+- v1.1.0 起采集器按保留策略分批清理 `metric_samples`、`interface_metric_samples` 和已恢复告警事件。
 
 ## API 开发约定
 
@@ -124,6 +128,7 @@ npm run build
 - PostgreSQL 读写实现在 `collector-go/internal/database/postgres.go`。
 - 类型定义在 `collector-go/internal/collector/types.go`。
 - SNMP v3 连接参数在 `engine.snmpClient` 中转换为 `gosnmp` 配置。
+- 历史数据清理在 `engine.cleanupOldData` 中调度，PostgreSQL 分批删除实现在 `CleanupOldData`。
 - 新增采集类型时，应同步更新：
   - 数据库表结构或字段。
   - `collector.Store` 接口。

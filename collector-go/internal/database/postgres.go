@@ -2,8 +2,11 @@ package database
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"snmp-monitor/collector-go/internal/collector"
+	"snmp-monitor/collector-go/internal/discovery"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -22,6 +25,10 @@ func Connect(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 		pool.Close()
 		return nil, err
 	}
+	if err := ensureRuntimeSchema(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return &PostgresStore{pool: pool}, nil
 }
 
@@ -29,12 +36,201 @@ func (store *PostgresStore) Close() {
 	store.pool.Close()
 }
 
+func (store *PostgresStore) ResetStaleDiscoveryJobs(ctx context.Context, staleAfter time.Duration) error {
+	_, err := store.pool.Exec(ctx, `
+		update discovery_jobs
+		set status = 'failed',
+			error_message = 'discovery worker stopped before finishing the job',
+			finished_at = now(),
+			updated_at = now()
+		where status = 'running'
+			and updated_at < now() - make_interval(secs => $1)
+	`, int(staleAfter.Seconds()))
+	return err
+}
+
+func (store *PostgresStore) ClaimDiscoveryJob(ctx context.Context) (*discovery.Job, error) {
+	var job discovery.Job
+	err := store.pool.QueryRow(ctx, `
+		with picked as (
+			select id
+			from discovery_jobs
+			where status = 'pending'
+			order by created_at
+			limit 1
+			for update skip locked
+		)
+		update discovery_jobs j
+		set status = 'running',
+			started_at = coalesce(started_at, now()),
+			finished_at = null,
+			error_message = null,
+			updated_at = now()
+		from picked
+		where j.id = picked.id
+		returning
+			j.id,
+			j.cidr,
+			j.port,
+			j.snmp_version,
+			coalesce(j.community, ''),
+			j.timeout_ms,
+			j.retries,
+			j.concurrency,
+			j.total_hosts,
+			j.scanned_hosts,
+			j.discovered_hosts,
+			j.status
+	`).Scan(
+		&job.ID,
+		&job.CIDR,
+		&job.Port,
+		&job.SNMPVersion,
+		&job.Community,
+		&job.TimeoutMS,
+		&job.Retries,
+		&job.Concurrency,
+		&job.TotalHosts,
+		&job.ScannedHosts,
+		&job.DiscoveredHosts,
+		&job.Status,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+func (store *PostgresStore) SetDiscoveryJobTotal(ctx context.Context, id int64, total int) error {
+	_, err := store.pool.Exec(ctx, `
+		update discovery_jobs
+		set total_hosts = $2,
+			updated_at = now()
+		where id = $1
+	`, id, total)
+	return err
+}
+
+func (store *PostgresStore) SaveDiscoveryResult(ctx context.Context, result discovery.Result) error {
+	_, err := store.pool.Exec(ctx, `
+		insert into discovery_results (
+			job_id,
+			host,
+			port,
+			snmp_version,
+			sys_name,
+			sys_descr,
+			sys_object_id,
+			response_ms,
+			status,
+			error_message,
+			discovered_at
+		)
+		values ($1, $2::inet, $3, $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), $8, $9, nullif($10, ''), now())
+		on conflict (job_id, host, port)
+		do update set
+			sys_name = excluded.sys_name,
+			sys_descr = excluded.sys_descr,
+			sys_object_id = excluded.sys_object_id,
+			response_ms = excluded.response_ms,
+			status = case when discovery_results.device_id is null then excluded.status else discovery_results.status end,
+			error_message = excluded.error_message,
+			discovered_at = now()
+	`, result.JobID, result.Host, result.Port, result.SNMPVersion, result.SysName, result.SysDescr, result.SysObjectID, result.ResponseMS, result.Status, result.Error)
+	return err
+}
+
+func (store *PostgresStore) IncrementDiscoveryProgress(ctx context.Context, id int64, discoveredDelta int) (string, error) {
+	var status string
+	err := store.pool.QueryRow(ctx, `
+		update discovery_jobs
+		set scanned_hosts = scanned_hosts + 1,
+			discovered_hosts = discovered_hosts + $2,
+			updated_at = now()
+		where id = $1
+		returning status
+	`, id, discoveredDelta).Scan(&status)
+	return status, err
+}
+
+func (store *PostgresStore) FinishDiscoveryJob(ctx context.Context, id int64, status string, message string) error {
+	_, err := store.pool.Exec(ctx, `
+		update discovery_jobs
+		set status = $2,
+			error_message = nullif($3, ''),
+			finished_at = now(),
+			updated_at = now()
+		where id = $1 and status <> 'canceled'
+	`, id, status, message)
+	return err
+}
+
+func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	_, err := pool.Exec(ctx, `
+		alter table alert_notifications add column if not exists subject text;
+		alter table alert_notifications add column if not exists error text;
+		alter table alert_notifications add column if not exists retry_count integer not null default 0;
+		alter table alert_notifications add column if not exists next_retry_at timestamptz not null default now();
+		alter table alert_notifications add column if not exists updated_at timestamptz not null default now();
+		create index if not exists idx_alert_notifications_pending
+			on alert_notifications(status, next_retry_at);
+		create unique index if not exists uq_alert_notifications_event_channel_target_subject
+			on alert_notifications(event_id, channel, target, subject);
+		create table if not exists discovery_jobs (
+			id bigserial primary key,
+			cidr text not null,
+			port integer not null default 161,
+			snmp_version text not null default '2c',
+			community text,
+			timeout_ms integer not null default 1000,
+			retries integer not null default 0,
+			concurrency integer not null default 16,
+			status text not null default 'pending',
+			total_hosts integer not null default 0,
+			scanned_hosts integer not null default 0,
+			discovered_hosts integer not null default 0,
+			error_message text,
+			started_at timestamptz,
+			finished_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists discovery_results (
+			id bigserial primary key,
+			job_id bigint not null references discovery_jobs(id) on delete cascade,
+			host inet not null,
+			port integer not null default 161,
+			snmp_version text not null default '2c',
+			sys_name text,
+			sys_descr text,
+			sys_object_id text,
+			response_ms integer,
+			status text not null default 'discovered',
+			device_id bigint references devices(id) on delete set null,
+			error_message text,
+			discovered_at timestamptz not null default now(),
+			imported_at timestamptz,
+			unique (job_id, host, port)
+		);
+		create index if not exists idx_discovery_jobs_status_created
+			on discovery_jobs(status, created_at desc);
+		create index if not exists idx_discovery_results_job_id
+			on discovery_results(job_id);
+		create index if not exists idx_discovery_results_host
+			on discovery_results(host);
+	`)
+	return err
+}
+
 func (store *PostgresStore) ListEnabledDevices(ctx context.Context) ([]collector.Device, error) {
 	rows, err := store.pool.Query(ctx, `
 		select
 			d.id,
 			d.name,
-			d.host,
+			host(d.host),
 			d.port,
 			coalesce(d.community, ''),
 			coalesce(d.snmp_version, '2c'),
@@ -245,8 +441,10 @@ func (store *PostgresStore) ListAlertRules(ctx context.Context) ([]collector.Ale
 	return rules, rows.Err()
 }
 
-func (store *PostgresStore) UpsertAlertEvent(ctx context.Context, event collector.AlertEvent) error {
-	_, err := store.pool.Exec(ctx, `
+func (store *PostgresStore) UpsertAlertEvent(ctx context.Context, event collector.AlertEvent) (int64, bool, error) {
+	var id int64
+	var created bool
+	err := store.pool.QueryRow(ctx, `
 		insert into alert_events (
 			rule_id,
 			device_id,
@@ -272,21 +470,251 @@ func (store *PostgresStore) UpsertAlertEvent(ctx context.Context, event collecto
 			message = excluded.message,
 			value_text = excluded.value_text,
 			last_seen_at = excluded.last_seen_at
-	`, event.RuleID, event.DeviceID, event.InterfaceID, event.Severity, event.Title, event.Message, event.Value, event.CreatedAt)
-	return err
+		returning id, (xmax = 0) as created
+	`, event.RuleID, event.DeviceID, event.InterfaceID, event.Severity, event.Title, event.Message, event.Value, event.CreatedAt).Scan(&id, &created)
+	return id, created, err
 }
 
-func (store *PostgresStore) ResolveAlertEvent(ctx context.Context, ruleID int64, deviceID int64, interfaceID int64, title string) error {
-	_, err := store.pool.Exec(ctx, `
-		update alert_events
+func (store *PostgresStore) ResolveAlertEvent(ctx context.Context, ruleID int64, deviceID int64, interfaceID int64, title string) (*collector.AlertEvent, error) {
+	var event collector.AlertEvent
+	err := store.pool.QueryRow(ctx, `
+		update alert_events e
 		set status = 'resolved',
 			resolved_at = now(),
 			last_seen_at = now()
-		where status = 'active'
-			and coalesce(rule_id, 0) = $1
-			and coalesce(device_id, 0) = $2
-			and coalesce(interface_id, 0) = $3
-			and title = $4
-	`, ruleID, deviceID, interfaceID, title)
+		from devices d
+		where e.device_id = d.id
+			and e.status = 'active'
+			and coalesce(e.rule_id, 0) = $1
+			and coalesce(e.device_id, 0) = $2
+			and coalesce(e.interface_id, 0) = $3
+			and e.title = $4
+		returning
+			e.id,
+			coalesce(e.rule_id, 0),
+			coalesce(e.device_id, 0),
+			coalesce(e.interface_id, 0),
+			e.severity,
+			e.title,
+			coalesce(e.message, ''),
+			coalesce(e.value_text, ''),
+			e.triggered_at,
+			coalesce(e.resolved_at, now()),
+			e.status,
+			d.name
+	`, ruleID, deviceID, interfaceID, title).Scan(
+		&event.ID,
+		&event.RuleID,
+		&event.DeviceID,
+		&event.InterfaceID,
+		&event.Severity,
+		&event.Title,
+		&event.Message,
+		&event.Value,
+		&event.CreatedAt,
+		&event.ResolvedAt,
+		&event.Status,
+		&event.DeviceName,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &event, err
+}
+
+func (store *PostgresStore) CreateAlertNotification(ctx context.Context, notification collector.AlertNotification) error {
+	_, err := store.pool.Exec(ctx, `
+		insert into alert_notifications (
+			event_id,
+			channel,
+			target,
+			status,
+			subject,
+			message,
+			next_retry_at,
+			updated_at
+		)
+		values ($1, $2, $3, 'pending', $4, $5, now(), now())
+		on conflict (event_id, channel, target, subject) do nothing
+	`, notification.EventID, notification.Channel, notification.Target, notification.Subject, notification.Message)
 	return err
+}
+
+func (store *PostgresStore) ResetStaleSendingNotifications(ctx context.Context, staleAfter time.Duration) error {
+	_, err := store.pool.Exec(ctx, `
+		update alert_notifications
+		set status = 'pending',
+			next_retry_at = now(),
+			updated_at = now()
+		where status = 'sending'
+			and updated_at < now() - make_interval(secs => $1)
+	`, int(staleAfter.Seconds()))
+	return err
+}
+
+func (store *PostgresStore) ClaimPendingNotifications(ctx context.Context, limit int) ([]collector.AlertNotification, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := store.pool.Query(ctx, `
+		with picked as (
+			select id
+			from alert_notifications
+			where channel = 'email'
+				and status = 'pending'
+				and next_retry_at <= now()
+			order by created_at
+			limit $1
+			for update skip locked
+		)
+		update alert_notifications n
+		set status = 'sending',
+			updated_at = now()
+		from picked
+		where n.id = picked.id
+		returning
+			n.id,
+			n.event_id,
+			n.channel,
+			coalesce(n.target, ''),
+			n.status,
+			coalesce(n.subject, ''),
+			coalesce(n.message, ''),
+			coalesce(n.error, ''),
+			n.retry_count,
+			n.created_at,
+			coalesce(n.sent_at, 'epoch'::timestamptz)
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var notifications []collector.AlertNotification
+	for rows.Next() {
+		var notification collector.AlertNotification
+		if err := rows.Scan(
+			&notification.ID,
+			&notification.EventID,
+			&notification.Channel,
+			&notification.Target,
+			&notification.Status,
+			&notification.Subject,
+			&notification.Message,
+			&notification.Error,
+			&notification.RetryCount,
+			&notification.CreatedAt,
+			&notification.SentAt,
+		); err != nil {
+			return nil, err
+		}
+		notifications = append(notifications, notification)
+	}
+	return notifications, rows.Err()
+}
+
+func (store *PostgresStore) MarkNotificationSent(ctx context.Context, id int64) error {
+	_, err := store.pool.Exec(ctx, `
+		update alert_notifications
+		set status = 'sent',
+			error = null,
+			sent_at = now(),
+			updated_at = now()
+		where id = $1
+	`, id)
+	return err
+}
+
+func (store *PostgresStore) MarkNotificationFailed(ctx context.Context, id int64, reason string, retryDelay time.Duration, maxRetries int) error {
+	status := "pending"
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+	_, err := store.pool.Exec(ctx, `
+		update alert_notifications
+		set status = case when retry_count + 1 >= $4 then 'failed' else $2 end,
+			error = $3,
+			retry_count = retry_count + 1,
+			next_retry_at = case when retry_count + 1 >= $4 then next_retry_at else now() + make_interval(secs => $5) end,
+			updated_at = now()
+		where id = $1
+	`, id, status, reason, maxRetries, int(retryDelay.Seconds()))
+	return err
+}
+
+func (store *PostgresStore) CleanupOldData(ctx context.Context, policy collector.RetentionPolicy) (collector.CleanupStats, error) {
+	var stats collector.CleanupStats
+	batchSize := policy.BatchSize
+	if batchSize <= 0 {
+		batchSize = 5000
+	}
+
+	if policy.InterfaceSamplesDays > 0 {
+		deleted, err := store.deleteOldRows(ctx, `
+			delete from interface_metric_samples
+			where id in (
+				select id
+				from interface_metric_samples
+				where created_at < now() - make_interval(days => $1)
+				order by created_at
+				limit $2
+			)
+		`, policy.InterfaceSamplesDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.InterfaceSamples = deleted
+	}
+
+	if policy.MetricSamplesDays > 0 {
+		deleted, err := store.deleteOldRows(ctx, `
+			delete from metric_samples
+			where id in (
+				select id
+				from metric_samples
+				where created_at < now() - make_interval(days => $1)
+				order by created_at
+				limit $2
+			)
+		`, policy.MetricSamplesDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.MetricSamples = deleted
+	}
+
+	if policy.ResolvedAlertsDays > 0 {
+		deleted, err := store.deleteOldRows(ctx, `
+			delete from alert_events
+			where id in (
+				select id
+				from alert_events
+				where status = 'resolved'
+					and coalesce(resolved_at, last_seen_at, triggered_at) < now() - make_interval(days => $1)
+				order by coalesce(resolved_at, last_seen_at, triggered_at)
+				limit $2
+			)
+		`, policy.ResolvedAlertsDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.ResolvedAlerts = deleted
+	}
+
+	return stats, nil
+}
+
+func (store *PostgresStore) deleteOldRows(ctx context.Context, query string, retentionDays int, batchSize int) (int64, error) {
+	var total int64
+	for {
+		result, err := store.pool.Exec(ctx, query, retentionDays, batchSize)
+		if err != nil {
+			return total, err
+		}
+		affected := result.RowsAffected()
+		total += affected
+		if affected < int64(batchSize) {
+			return total, nil
+		}
+	}
 }

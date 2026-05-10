@@ -158,6 +158,83 @@ export interface AlertEvent {
   resolved_at?: string | null
 }
 
+export interface AlertNotification {
+  id: string
+  event_id: string
+  event_title?: string | null
+  severity?: 'warning' | 'critical' | 'info'
+  event_status?: 'active' | 'resolved'
+  device_name?: string | null
+  channel: string
+  target?: string | null
+  status: 'pending' | 'sending' | 'sent' | 'failed'
+  subject?: string | null
+  message?: string | null
+  error?: string | null
+  retry_count: number
+  created_at: string
+  sent_at?: string | null
+  updated_at?: string
+}
+
+export interface DiscoveryJob {
+  id: string
+  cidr: string
+  port: number
+  snmp_version: '2c'
+  community?: string
+  timeout_ms: number
+  retries: number
+  concurrency: number
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'canceled'
+  total_hosts: number
+  scanned_hosts: number
+  discovered_hosts: number
+  error_message?: string | null
+  started_at?: string | null
+  finished_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DiscoveryResult {
+  id: string
+  job_id: string
+  host: string
+  port: number
+  snmp_version: '2c'
+  sys_name?: string | null
+  sys_descr?: string | null
+  sys_object_id?: string | null
+  response_ms?: number | null
+  status: 'discovered' | 'imported'
+  device_id?: string | null
+  device_name?: string | null
+  error_message?: string | null
+  discovered_at: string
+  imported_at?: string | null
+}
+
+export interface CreateDiscoveryJobPayload {
+  cidr: string
+  port: number
+  community: string
+  timeout_ms: number
+  retries: number
+  concurrency: number
+}
+
+export interface ImportDiscoveryResultsPayload {
+  resultIds: string[]
+  group_id?: string | null
+  enabled?: boolean
+}
+
+export interface ImportDiscoveryResultsResponse {
+  imported: Device[]
+  skipped: Array<{ resultId: string; reason: string; deviceId?: string }>
+}
+
 export async function getHealth(): Promise<HealthStatus> {
   return request('/health')
 }
@@ -282,6 +359,50 @@ export async function listAlertEvents(params: Record<string, string | number> = 
 export async function resolveAlertEvent(id: string): Promise<AlertEvent> {
   return request(`/api/alerts/events/${id}/resolve`, {
     method: 'PATCH'
+  })
+}
+
+export async function listAlertNotifications(params: Record<string, string | number> = {}): Promise<AlertNotification[]> {
+  return request(`/api/alerts/notifications${querySuffix(params)}`)
+}
+
+export async function retryAlertNotification(id: string): Promise<AlertNotification> {
+  return request(`/api/alerts/notifications/${id}/retry`, {
+    method: 'PATCH'
+  })
+}
+
+export async function createDiscoveryJob(payload: CreateDiscoveryJobPayload): Promise<DiscoveryJob> {
+  return request('/api/discovery/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function listDiscoveryJobs(params: Record<string, string | number> = {}): Promise<DiscoveryJob[]> {
+  return request(`/api/discovery/jobs${querySuffix(params)}`)
+}
+
+export async function getDiscoveryJob(id: string): Promise<DiscoveryJob> {
+  return request(`/api/discovery/jobs/${id}`)
+}
+
+export async function cancelDiscoveryJob(id: string): Promise<DiscoveryJob> {
+  return request(`/api/discovery/jobs/${id}/cancel`, {
+    method: 'PATCH'
+  })
+}
+
+export async function listDiscoveryResults(jobId: string, params: Record<string, string | number> = {}): Promise<DiscoveryResult[]> {
+  return request(`/api/discovery/jobs/${jobId}/results${querySuffix(params)}`)
+}
+
+export async function importDiscoveryResults(payload: ImportDiscoveryResultsPayload): Promise<ImportDiscoveryResultsResponse> {
+  return request('/api/discovery/results/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
   })
 }
 

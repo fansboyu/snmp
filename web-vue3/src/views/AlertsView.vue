@@ -6,10 +6,13 @@ import {
   createAlertRule,
   getAlertSummary,
   listAlertEvents,
+  listAlertNotifications,
   listAlertRules,
+  retryAlertNotification,
   resolveAlertEvent,
   updateAlertRule,
   type AlertEvent,
+  type AlertNotification,
   type AlertRule,
   type AlertSummary
 } from '../services/api'
@@ -18,8 +21,11 @@ const loading = ref(false)
 const summary = ref<AlertSummary | null>(null)
 const events = ref<AlertEvent[]>([])
 const rules = ref<AlertRule[]>([])
+const notifications = ref<AlertNotification[]>([])
 const eventStatus = ref<'active' | 'resolved' | ''>('active')
+const notificationStatus = ref<'pending' | 'sending' | 'sent' | 'failed' | ''>('')
 const resolvingId = ref('')
+const retryingNotificationId = ref('')
 const ruleForm = reactive({
   name: '',
   rule_type: 'cpu_threshold',
@@ -35,14 +41,16 @@ const activeEvents = computed(() => events.value.filter((event) => event.status 
 async function loadData(): Promise<void> {
   loading.value = true
   try {
-    const [summaryResult, eventResult, ruleResult] = await Promise.all([
+    const [summaryResult, eventResult, ruleResult, notificationResult] = await Promise.all([
       getAlertSummary(),
       listAlertEvents({ status: eventStatus.value || '', limit: 200 }),
-      listAlertRules()
+      listAlertRules(),
+      listAlertNotifications({ status: notificationStatus.value || '', limit: 100 })
     ])
     summary.value = summaryResult
     events.value = eventResult
     rules.value = ruleResult
+    notifications.value = notificationResult
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '加载告警中心失败')
   } finally {
@@ -78,6 +86,17 @@ async function resolveEvent(event: AlertEvent): Promise<void> {
   }
 }
 
+async function retryNotification(notification: AlertNotification): Promise<void> {
+  retryingNotificationId.value = notification.id
+  try {
+    await retryAlertNotification(notification.id)
+    ElMessage.success('通知已重新入队')
+    await loadData()
+  } finally {
+    retryingNotificationId.value = ''
+  }
+}
+
 function severityType(severity: AlertEvent['severity']): 'danger' | 'warning' | 'info' {
   if (severity === 'critical') return 'danger'
   if (severity === 'warning') return 'warning'
@@ -86,6 +105,13 @@ function severityType(severity: AlertEvent['severity']): 'danger' | 'warning' | 
 
 function statusType(status: AlertEvent['status']): 'danger' | 'success' {
   return status === 'active' ? 'danger' : 'success'
+}
+
+function notificationStatusType(status: AlertNotification['status']): 'info' | 'warning' | 'success' | 'danger' {
+  if (status === 'sent') return 'success'
+  if (status === 'failed') return 'danger'
+  if (status === 'sending') return 'warning'
+  return 'info'
 }
 
 function ruleTypeName(type: string): string {
@@ -165,6 +191,54 @@ onMounted(loadData)
         </el-table-column>
       </el-table>
       <div class="alert-empty-hint" v-if="activeEvents.length === 0 && eventStatus === 'active'">当前没有未恢复告警</div>
+    </el-card>
+
+    <el-card class="page-card dashboard-row" shadow="never">
+      <template #header>
+        <div class="card-header-row">
+          <span>邮件通知记录</span>
+          <el-select v-model="notificationStatus" placeholder="通知状态" clearable @change="loadData">
+            <el-option label="全部" value="" />
+            <el-option label="待发送" value="pending" />
+            <el-option label="发送中" value="sending" />
+            <el-option label="已发送" value="sent" />
+            <el-option label="失败" value="failed" />
+          </el-select>
+        </div>
+      </template>
+      <el-table :data="notifications" row-key="id" empty-text="暂无通知记录">
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag :type="notificationStatusType(row.status)">{{ row.status }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="channel" label="通道" width="90" />
+        <el-table-column prop="target" label="收件人" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="subject" label="标题" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="device_name" label="设备" min-width="140" />
+        <el-table-column prop="retry_count" label="重试" width="80" />
+        <el-table-column prop="error" label="错误" min-width="220" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.error || '-' }}</template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="220" />
+        <el-table-column prop="sent_at" label="发送时间" width="220">
+          <template #default="{ row }">{{ row.sent_at || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'failed'"
+              link
+              type="primary"
+              :loading="retryingNotificationId === row.id"
+              @click="retryNotification(row)"
+            >
+              重试
+            </el-button>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+      </el-table>
     </el-card>
 
     <el-row :gutter="16" class="dashboard-row">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Collection, DataLine, Expand, Fold, House, Monitor, SwitchButton } from '@element-plus/icons-vue'
+import { Bell, Collection, DataLine, Expand, Fold, House, Monitor, Search, SwitchButton } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 
@@ -48,6 +48,10 @@ async function handleLogout(): Promise<void> {
         <el-menu-item index="/devices">
           <el-icon><Monitor /></el-icon>
           <span>设备管理</span>
+        </el-menu-item>
+        <el-menu-item index="/discovery">
+          <el-icon><Search /></el-icon>
+          <span>自动发现</span>
         </el-menu-item>
         <el-menu-item index="/metrics">
           <el-icon><Collection /></el-icon>

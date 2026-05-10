@@ -146,6 +146,73 @@ export async function alertRoutes(app) {
     return result.rows
   })
 
+  app.get('/notifications', async (request) => {
+    const status = request.query.status
+    const eventId = request.query.eventId
+    const limit = Math.min(Number(request.query.limit ?? 200), 500)
+    const result = await app.db.query(
+      `
+        select
+          n.id,
+          n.event_id,
+          e.title as event_title,
+          e.severity,
+          e.status as event_status,
+          d.name as device_name,
+          n.channel,
+          n.target,
+          n.status,
+          n.subject,
+          n.message,
+          n.error,
+          n.retry_count,
+          n.created_at,
+          n.sent_at,
+          n.updated_at
+        from alert_notifications n
+        join alert_events e on e.id = n.event_id
+        left join devices d on d.id = e.device_id
+        where ($1::text is null or n.status = $1)
+          and ($2::bigint is null or n.event_id = $2)
+        order by n.created_at desc
+        limit $3
+      `,
+      [status ?? null, eventId ?? null, limit]
+    )
+    return result.rows
+  })
+
+  app.get('/notification-config', async () => {
+    return {
+      emailEnabled: process.env.ALERT_EMAIL_ENABLED === 'true',
+      smtpHost: process.env.SMTP_HOST || '',
+      smtpPort: process.env.SMTP_PORT || '',
+      smtpFrom: process.env.SMTP_FROM || '',
+      emailToConfigured: Boolean(process.env.ALERT_EMAIL_TO)
+    }
+  })
+
+  app.patch('/notifications/:id/retry', async (request, reply) => {
+    const { id } = request.params
+    const result = await app.db.query(
+      `
+        update alert_notifications
+        set status = 'pending',
+          error = null,
+          next_retry_at = now(),
+          updated_at = now()
+        where id = $1 and status = 'failed'
+        returning *
+      `,
+      [id]
+    )
+    if (result.rowCount === 0) {
+      reply.code(404)
+      return { message: 'notification not found or not failed' }
+    }
+    return result.rows[0]
+  })
+
   app.patch('/events/:id/resolve', async (request) => {
     const { id } = request.params
     const result = await app.db.query(

@@ -70,6 +70,7 @@ type AlertRule struct {
 }
 
 type AlertEvent struct {
+	ID          int64
 	RuleID      int64
 	DeviceID    int64
 	InterfaceID int64
@@ -78,4 +79,45 @@ type AlertEvent struct {
 	Message     string
 	Value       string
 	CreatedAt   time.Time
+	ResolvedAt  time.Time
+	Status      string
+	DeviceName  string
+}
+
+type RetentionPolicy struct {
+	MetricSamplesDays    int
+	InterfaceSamplesDays int
+	ResolvedAlertsDays   int
+	BatchSize            int
+}
+
+func (policy RetentionPolicy) Enabled() bool {
+	return policy.MetricSamplesDays > 0 || policy.InterfaceSamplesDays > 0 || policy.ResolvedAlertsDays > 0
+}
+
+type CleanupStats struct {
+	MetricSamples    int64
+	InterfaceSamples int64
+	ResolvedAlerts   int64
+}
+
+type AlertNotification struct {
+	ID         int64
+	EventID    int64
+	Channel    string
+	Target     string
+	Status     string
+	Subject    string
+	Message    string
+	Error      string
+	RetryCount int
+	CreatedAt  time.Time
+	SentAt     time.Time
+}
+
+type NotificationSettings struct {
+	Enabled       bool
+	Targets       []string
+	SendResolved  bool
+	SubjectPrefix string
 }

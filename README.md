@@ -16,6 +16,7 @@
 .
 ├── api-gateway/          # Fastify API 网关
 ├── collector-go/         # Go SNMP 采集器
+├── docker/               # 本地 SNMP Agent 测试容器配置
 ├── postgres/             # PostgreSQL schema 与默认数据
 ├── scripts/              # 本地辅助脚本
 ├── web-vue3/             # Vue 3 前端
@@ -35,6 +36,7 @@ docker compose up -d --build
 - API Gateway：`http://localhost:13000`
 - API Health：`http://localhost:13000/health`
 - PostgreSQL：`localhost:5432`
+- 内置 SNMP Agent：通过 Docker 网络供采集器访问，不暴露到宿主机
 
 停止服务：
 
@@ -47,6 +49,13 @@ docker compose down
 ```powershell
 docker compose down -v
 ```
+
+> `docker compose down -v` 会清空数据库卷。若只是想重新加载初始化数据，可优先执行：
+>
+> ```powershell
+> docker exec snmp-monitor-postgres psql -U snmp -d snmp_monitor -f /docker-entrypoint-initdb.d/002-seed.sql
+> docker restart snmp-monitor-collector
+> ```
 
 ## 容器说明
 
@@ -145,6 +154,7 @@ Go SNMP 采集器容器。
 - 将采集结果写入 `metric_samples`
 - 支持 SNMP v2c 与 SNMP v3（noAuthNoPriv、authNoPriv、authPriv）
 - 使用 worker pool 控制并发采集数量
+- 接口表指标优先使用 GetBulk，失败时自动回退到普通 Walk
 - 支持采集周期、超时、重试、worker 数量配置
 
 **环境变量**
@@ -153,10 +163,20 @@ Go SNMP 采集器容器。
 | --- | --- | --- |
 | `DATABASE_URL` | `postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable` | 数据库连接地址 |
 | `COLLECT_INTERVAL_SECONDS` | `60` | 采集周期，单位秒 |
+| `CLEANUP_INTERVAL_SECONDS` | `3600` | 历史数据清理周期，单位秒；小于等于 `0` 表示关闭 |
+| `METRIC_SAMPLE_RETENTION_DAYS` | `30` | 标量样本保留天数；小于等于 `0` 表示不清理 |
+| `INTERFACE_SAMPLE_RETENTION_DAYS` | `30` | 接口样本保留天数；小于等于 `0` 表示不清理 |
+| `RESOLVED_ALERT_RETENTION_DAYS` | `90` | 已恢复告警事件保留天数；小于等于 `0` 表示不清理 |
+| `CLEANUP_BATCH_SIZE` | `5000` | 单批删除行数，避免一次清理大表锁太久 |
 | `SNMP_TIMEOUT_SECONDS` | `3` | SNMP 请求超时，单位秒 |
 | `SNMP_RETRIES` | `1` | SNMP 请求重试次数 |
 | `WORKER_COUNT` | `16` | 并发采集 worker 数量 |
+| `GETBULK_MAX_REPETITIONS` | `25` | 接口表 GetBulk 每次请求最大重复数；设为 `0` 使用 `gosnmp` 默认值 |
 | `SNMP_COMMUNITY` | `public` | 默认 community，设备未单独配置时使用 |
+| `ALERT_EMAIL_ENABLED` | `false` | 是否在告警触发时写入邮件通知队列 |
+| `ALERT_EMAIL_TO` | 空 | 告警邮件收件人，多个邮箱用英文逗号分隔 |
+| `ALERT_EMAIL_SEND_RESOLVED` | `true` | 告警恢复时是否写入恢复邮件通知 |
+| `ALERT_EMAIL_SUBJECT_PREFIX` | `[SNMP Monitor]` | 告警邮件标题前缀 |
 
 **当前采集逻辑**
 
@@ -164,11 +184,94 @@ Go SNMP 采集器容器。
 2. 按 `COLLECT_INTERVAL_SECONDS` 周期循环采集。
 3. 查询 `devices.enabled = true` 的设备。
 4. 按设备分组加载绑定的 OID 模板。
-5. 标量指标执行 SNMP `Get`，接口表指标执行 SNMP `Walk`。
+5. 标量指标执行 SNMP `Get`，接口表指标优先执行 SNMP `BulkWalk`，失败时回退到 `Walk`。
 6. 写入 `metric_samples`、`device_interfaces` 和 `interface_metric_samples`。
 7. 根据 CPU 阈值和接口 Down 规则生成或恢复告警事件。
+8. 邮件通知启用时，告警首次触发和恢复会写入 `alert_notifications` 队列。
+9. 按保留策略定时分批清理历史样本和已恢复告警事件。
 
-> 默认 seed 数据中的设备 `enabled=false`，这是为了避免本机没有 SNMP 服务时采集器持续输出连接失败日志。你可以通过 API 或数据库把设备启用后进行真实采集。
+> 当前 Docker 版本已内置 3 个 SNMP Agent 容器并默认启用采集设备，因此启动后会自动产生真实采集样本。
+
+### 内置 SNMP Agent 容器
+
+用于本地联调和演示真实 SNMP 采集链路。
+
+| 容器 | IP | 协议 | 凭据 |
+| --- | --- | --- | --- |
+| `snmp-agent-v2c-router` | `172.28.0.11` | SNMP v2c | community `public` |
+| `snmp-agent-v2c-switch` | `172.28.0.12` | SNMP v2c | community `public` |
+| `snmp-agent-v3-router` | `172.28.0.13` | SNMP v3 authPriv | user `monitor`，auth `SHA256/auth-password`，priv `AES/priv-password` |
+
+这些容器不暴露宿主机端口，只在 Compose 内部网络供采集器访问。
+
+### `snmp-monitor-notifier`
+
+邮件通知发送器容器。
+
+**构建目录**
+
+- `collector-go/`
+- 使用 `collector-go/Dockerfile.notifier`
+
+**主要功能**
+
+- 轮询 `alert_notifications` 中的 `email/pending` 任务。
+- 通过 SMTP 发送邮件。
+- 发送成功标记为 `sent`，失败后按 1 分钟、5 分钟、15 分钟重试，超过次数标记为 `failed`。
+- 启动时会把超时卡住的 `sending` 任务重置为 `pending`。
+
+**环境变量**
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable` | 数据库连接地址 |
+| `SMTP_HOST` | 空 | SMTP 服务器地址 |
+| `SMTP_PORT` | `587` | SMTP 端口 |
+| `SMTP_USERNAME` | 空 | SMTP 用户名 |
+| `SMTP_PASSWORD` | 空 | SMTP 密码 |
+| `SMTP_FROM` | 空 | 发件人地址 |
+| `SMTP_TLS_MODE` | `starttls` | TLS 模式，支持 `starttls`、`implicit`、`none` |
+| `SMTP_TIMEOUT_SECONDS` | `10` | SMTP 连接超时 |
+| `SMTP_POLL_INTERVAL_SECONDS` | `10` | 通知队列轮询周期 |
+| `SMTP_BATCH_SIZE` | `50` | 每轮最多处理通知数 |
+| `SMTP_MAX_RETRIES` | `3` | 最大发送尝试次数 |
+
+示例：
+
+```powershell
+$env:ALERT_EMAIL_ENABLED="true"
+$env:ALERT_EMAIL_TO="ops@example.com,admin@example.com"
+$env:SMTP_HOST="smtp.example.com"
+$env:SMTP_PORT="587"
+$env:SMTP_USERNAME="monitor@example.com"
+$env:SMTP_PASSWORD="your-password"
+$env:SMTP_FROM="monitor@example.com"
+docker compose up -d --build
+```
+
+### `snmp-monitor-discovery-worker`
+
+SNMP 自动发现任务执行器容器。
+
+**构建目录**
+
+- `collector-go/`
+- 使用 `collector-go/Dockerfile.discovery`
+
+**主要功能**
+
+- 轮询 `discovery_jobs` 中的 `pending` 任务。
+- 按 CIDR 扫描 SNMP v2c 设备，当前 MVP 支持单 community。
+- 读取 `sysName`、`sysDescr`、`sysObjectID` 并写入 `discovery_results`。
+- 更新任务进度，发现结果需要在前端手动导入为设备。
+
+**环境变量**
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable` | 数据库连接地址 |
+| `DISCOVERY_POLL_INTERVAL_SECONDS` | `5` | 发现任务轮询周期 |
+| `DISCOVERY_STALE_RUNNING_SECONDS` | `1800` | running 任务卡住后的失败判定时间 |
 
 ### `snmp-monitor-web`
 
@@ -202,6 +305,7 @@ Vue 3 前端容器。
 | `/login` | 登录页 | 本地演示登录，默认账号 `admin / admin123` |
 | `/dashboard` | 监控概览 | 展示 API 状态、统计卡片、CPU、接口流量、接口状态和采集趋势 |
 | `/devices` | 设备管理 | 查询设备、搜索设备、添加设备，点击设备名称进入详情 |
+| `/discovery` | 自动发现 | 创建 SNMP v2c CIDR 发现任务，查看结果并手动导入设备 |
 | `/devices/:id` | 设备监控 | 展示单设备 CPU、接口状态、采集趋势、接口清单和各接口流量图 |
 | `/metrics` | 指标管理 | 管理 OID 模板、设备分组和接口表数据 |
 | `/alerts` | 告警中心 | 查看告警统计、当前/历史事件，管理告警规则 |
@@ -436,6 +540,53 @@ curl http://localhost:13000/api/metrics/definitions
 
 查询接口表样本，可使用 `deviceId`、`interfaceId`、`metric`、`limit` 过滤。
 
+### 自动发现接口
+
+#### `POST /api/discovery/jobs`
+
+创建 SNMP v2c 自动发现任务。MVP 支持单 community 和 IPv4 CIDR，默认限制最大 256 个地址。
+
+**请求体**
+
+```json
+{
+  "cidr": "172.28.0.0/28",
+  "port": 161,
+  "community": "public",
+  "timeout_ms": 1000,
+  "retries": 0,
+  "concurrency": 16
+}
+```
+
+#### `GET /api/discovery/jobs`
+
+查询发现任务列表。
+
+#### `GET /api/discovery/jobs/:id`
+
+查询单个发现任务进度。
+
+#### `GET /api/discovery/jobs/:id/results`
+
+查询发现结果。
+
+#### `POST /api/discovery/results/import`
+
+将发现结果手动导入 `devices`。默认建议 `enabled=false`，确认后再启用采集。
+
+```json
+{
+  "resultIds": ["1", "2"],
+  "group_id": "1",
+  "enabled": false
+}
+```
+
+#### `PATCH /api/discovery/jobs/:id/cancel`
+
+取消等待中或运行中的发现任务。
+
 ### 图表接口
 
 #### `GET /api/charts/cpu`
@@ -483,6 +634,18 @@ curl http://localhost:13000/api/metrics/definitions
 
 手动标记告警事件为已恢复。
 
+#### `GET /api/alerts/notifications`
+
+查询告警通知记录，可使用 `status`、`eventId`、`limit` 过滤。
+
+#### `PATCH /api/alerts/notifications/:id/retry`
+
+将失败的通知重新放回待发送队列。
+
+#### `GET /api/alerts/notification-config`
+
+查看邮件通知配置摘要，不返回 SMTP 密码。
+
 #### `GET /api/metrics/samples`
 
 查询采集样本。
@@ -522,11 +685,15 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
 ### 默认设备
 
-| 名称 | IP | SNMP 端口 | Community | 是否启用 |
+初始化时不会再写入 CPU、接口、流量、告警事件等模拟样本；只写入可由采集器真实访问的 Docker SNMP Agent 设备。
+
+| 名称 | IP | SNMP 版本 | 凭据 | 是否启用 |
 | --- | --- | --- | --- | --- |
-| `Demo Router` | `127.0.0.1` | `161` | `public` | `false` |
-| `Core Switch 01` | `192.0.2.10` | `161` | `public` | `false` |
-| `Edge Switch 01` | `192.0.2.11` | `161` | `public` | `false` |
+| `Lab SNMPv2 Router` | `172.28.0.11` | `2c` | community `public` | `true` |
+| `Lab SNMPv2 Switch` | `172.28.0.12` | `2c` | community `public` | `true` |
+| `Lab SNMPv3 Router` | `172.28.0.13` | `3` | `monitor / auth-password / priv-password` | `true` |
+
+这些 IP 是 `docker-compose.yml` 中 `snmp-monitor-net` 网络的固定容器地址，采集器启动后会立刻通过 SNMP 采集真实容器数据。
 
 ### 默认指标定义
 
@@ -540,13 +707,23 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 | `ifInOctets` | `.1.3.6.1.2.1.2.2.1.10` | `bytes` |
 | `ifOutOctets` | `.1.3.6.1.2.1.2.2.1.16` | `bytes` |
 
-### 默认样本
+### 默认样本与告警
 
-默认会写入设备、CPU、接口清单、接口流量演示样本、告警规则和接口 Down 演示告警，用于前端 Dashboard、设备监控详情、告警中心和最新数据页展示。
+默认不再写入任何模拟样本、模拟接口清单或模拟告警事件。Dashboard、设备详情和最新数据页的数据由 `snmp-monitor-collector` 从内置 SNMP Agent 容器实时采集后写入。
+
+默认保留告警规则配置，例如 CPU 阈值和接口 Down 规则；告警事件只会由真实采集结果触发。
 
 ## TimescaleDB 是否需要
 
 当前 MVP 可以继续使用普通 PostgreSQL：部署更简单，演示环境和小规模设备采集完全够用。
+
+v1.1.0 已内置 PostgreSQL 历史数据保留策略，默认保留：
+
+- 标量样本 `metric_samples`：`30` 天。
+- 接口样本 `interface_metric_samples`：`30` 天。
+- 已恢复告警 `alert_events(status='resolved')`：`90` 天。
+
+采集器每 `CLEANUP_INTERVAL_SECONDS` 秒执行一次清理，并按 `CLEANUP_BATCH_SIZE` 分批删除，适合普通 PostgreSQL 的中小规模部署。
 
 当满足以下任一情况时，建议引入 TimescaleDB：
 

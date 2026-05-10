@@ -19,17 +19,23 @@ type Store interface {
 	UpsertInterface(context.Context, InterfaceInfo) (int64, error)
 	SaveInterfaceSamples(context.Context, []InterfaceMetricSample) error
 	ListAlertRules(context.Context) ([]AlertRule, error)
-	UpsertAlertEvent(context.Context, AlertEvent) error
-	ResolveAlertEvent(context.Context, int64, int64, int64, string) error
+	UpsertAlertEvent(context.Context, AlertEvent) (int64, bool, error)
+	ResolveAlertEvent(context.Context, int64, int64, int64, string) (*AlertEvent, error)
+	CreateAlertNotification(context.Context, AlertNotification) error
+	CleanupOldData(context.Context, RetentionPolicy) (CleanupStats, error)
 }
 
 type Engine struct {
 	Store            Store
 	Interval         time.Duration
+	CleanupInterval  time.Duration
+	RetentionPolicy  RetentionPolicy
 	Timeout          time.Duration
 	Retries          int
 	WorkerCount      int
+	MaxRepetitions   uint32
 	DefaultCommunity string
+	Notifications    NotificationSettings
 }
 
 func (engine Engine) Run(ctx context.Context) error {
@@ -40,6 +46,13 @@ func (engine Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(engine.Interval)
 	defer ticker.Stop()
 
+	var cleanupTicker *time.Ticker
+	if engine.CleanupInterval > 0 && engine.RetentionPolicy.Enabled() {
+		cleanupTicker = time.NewTicker(engine.CleanupInterval)
+		defer cleanupTicker.Stop()
+		engine.cleanupOldData(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -48,7 +61,32 @@ func (engine Engine) Run(ctx context.Context) error {
 			if err := engine.collectOnce(ctx); err != nil {
 				log.Printf("collect failed: %v", err)
 			}
+		case <-cleanupChan(cleanupTicker):
+			engine.cleanupOldData(ctx)
 		}
+	}
+}
+
+func cleanupChan(ticker *time.Ticker) <-chan time.Time {
+	if ticker == nil {
+		return nil
+	}
+	return ticker.C
+}
+
+func (engine Engine) cleanupOldData(ctx context.Context) {
+	stats, err := engine.Store.CleanupOldData(ctx, engine.RetentionPolicy)
+	if err != nil {
+		log.Printf("cleanup old data failed: %v", err)
+		return
+	}
+	if stats.MetricSamples > 0 || stats.InterfaceSamples > 0 || stats.ResolvedAlerts > 0 {
+		log.Printf(
+			"cleanup old data completed: metric_samples=%d interface_samples=%d resolved_alerts=%d",
+			stats.MetricSamples,
+			stats.InterfaceSamples,
+			stats.ResolvedAlerts,
+		)
 	}
 }
 
@@ -180,7 +218,7 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 			tableOID = metric.OID
 		}
 
-		err := client.Walk(tableOID, func(variable gosnmp.SnmpPDU) error {
+		walkFn := func(variable gosnmp.SnmpPDU) error {
 			ifIndex, ok := interfaceIndex(tableOID, variable.Name)
 			if !ok {
 				return nil
@@ -219,9 +257,16 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 				CreatedAt:   now,
 			})
 			return nil
-		})
+		}
+
+		sampleCount := len(samples)
+		err := client.BulkWalk(tableOID, walkFn)
 		if err != nil {
-			log.Printf("walk %s %s failed: %v", device.Host, tableOID, err)
+			samples = samples[:sampleCount]
+			log.Printf("bulk walk %s %s failed, fallback to walk: %v", device.Host, tableOID, err)
+			if walkErr := client.Walk(tableOID, walkFn); walkErr != nil {
+				log.Printf("walk %s %s failed: %v", device.Host, tableOID, walkErr)
+			}
 		}
 	}
 
@@ -263,18 +308,19 @@ func (engine Engine) evaluateCPUAlert(ctx context.Context, device Device, rule A
 		triggered := compare(value, rule.Operator, rule.Threshold)
 		title := "CPU 使用率超过阈值"
 		if triggered {
-			_ = engine.Store.UpsertAlertEvent(ctx, AlertEvent{
-				RuleID:    rule.ID,
-				DeviceID:  device.ID,
-				Severity:  severity(rule.Severity),
-				Title:     title,
-				Message:   fmt.Sprintf("%s CPU 使用率 %.2f%%，阈值 %.2f%%", device.Name, value, rule.Threshold),
-				Value:     sample.Value,
-				CreatedAt: sample.CreatedAt,
+			engine.upsertAlertEvent(ctx, AlertEvent{
+				RuleID:     rule.ID,
+				DeviceID:   device.ID,
+				Severity:   severity(rule.Severity),
+				Title:      title,
+				Message:    fmt.Sprintf("%s CPU 使用率 %.2f%%，阈值 %.2f%%", device.Name, value, rule.Threshold),
+				Value:      sample.Value,
+				CreatedAt:  sample.CreatedAt,
+				DeviceName: device.Name,
 			})
 			continue
 		}
-		_ = engine.Store.ResolveAlertEvent(ctx, rule.ID, device.ID, 0, title)
+		engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, title)
 	}
 }
 
@@ -288,7 +334,7 @@ func (engine Engine) evaluateInterfaceDownAlert(ctx context.Context, device Devi
 		}
 		title := "接口状态 Down"
 		if strings.TrimSpace(sample.Value) == "2" || strings.EqualFold(sample.Value, "down") {
-			_ = engine.Store.UpsertAlertEvent(ctx, AlertEvent{
+			engine.upsertAlertEvent(ctx, AlertEvent{
 				RuleID:      rule.ID,
 				DeviceID:    device.ID,
 				InterfaceID: sample.InterfaceID,
@@ -297,11 +343,94 @@ func (engine Engine) evaluateInterfaceDownAlert(ctx context.Context, device Devi
 				Message:     fmt.Sprintf("%s ifIndex %d 接口处于 Down 状态", device.Name, sample.IfIndex),
 				Value:       sample.Value,
 				CreatedAt:   sample.CreatedAt,
+				DeviceName:  device.Name,
 			})
 			continue
 		}
-		_ = engine.Store.ResolveAlertEvent(ctx, rule.ID, device.ID, sample.InterfaceID, title)
+		engine.resolveAlertEvent(ctx, rule.ID, device.ID, sample.InterfaceID, title)
 	}
+}
+
+func (engine Engine) upsertAlertEvent(ctx context.Context, event AlertEvent) {
+	eventID, created, err := engine.Store.UpsertAlertEvent(ctx, event)
+	if err != nil {
+		log.Printf("upsert alert event failed: %v", err)
+		return
+	}
+	if created {
+		event.ID = eventID
+		engine.queueAlertNotifications(ctx, event, "triggered")
+	}
+}
+
+func (engine Engine) resolveAlertEvent(ctx context.Context, ruleID int64, deviceID int64, interfaceID int64, title string) {
+	event, err := engine.Store.ResolveAlertEvent(ctx, ruleID, deviceID, interfaceID, title)
+	if err != nil {
+		log.Printf("resolve alert event failed: %v", err)
+		return
+	}
+	if event != nil && engine.Notifications.SendResolved {
+		engine.queueAlertNotifications(ctx, *event, "resolved")
+	}
+}
+
+func (engine Engine) queueAlertNotifications(ctx context.Context, event AlertEvent, action string) {
+	if !engine.Notifications.Enabled || len(engine.Notifications.Targets) == 0 || event.ID == 0 {
+		return
+	}
+	subject := alertNotificationSubject(engine.Notifications.SubjectPrefix, event, action)
+	message := alertNotificationMessage(event, action)
+	for _, target := range engine.Notifications.Targets {
+		target = strings.TrimSpace(target)
+		if target == "" {
+			continue
+		}
+		err := engine.Store.CreateAlertNotification(ctx, AlertNotification{
+			EventID: event.ID,
+			Channel: "email",
+			Target:  target,
+			Subject: subject,
+			Message: message,
+		})
+		if err != nil {
+			log.Printf("queue alert notification failed: %v", err)
+		}
+	}
+}
+
+func alertNotificationSubject(prefix string, event AlertEvent, action string) string {
+	if prefix == "" {
+		prefix = "[SNMP Monitor]"
+	}
+	status := "Alert"
+	if action == "resolved" {
+		status = "Resolved"
+	}
+	deviceName := event.DeviceName
+	if deviceName == "" {
+		deviceName = fmt.Sprintf("device-%d", event.DeviceID)
+	}
+	return fmt.Sprintf("%s[%s][%s] %s - %s", prefix, status, event.Severity, event.Title, deviceName)
+}
+
+func alertNotificationMessage(event AlertEvent, action string) string {
+	status := "告警触发"
+	if action == "resolved" {
+		status = "告警恢复"
+	}
+	lines := []string{
+		fmt.Sprintf("状态: %s", status),
+		fmt.Sprintf("级别: %s", event.Severity),
+		fmt.Sprintf("设备: %s", event.DeviceName),
+		fmt.Sprintf("标题: %s", event.Title),
+		fmt.Sprintf("详情: %s", event.Message),
+		fmt.Sprintf("当前值: %s", event.Value),
+		fmt.Sprintf("触发时间: %s", event.CreatedAt.Format(time.RFC3339)),
+	}
+	if !event.ResolvedAt.IsZero() {
+		lines = append(lines, fmt.Sprintf("恢复时间: %s", event.ResolvedAt.Format(time.RFC3339)))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func compare(value float64, operator string, threshold float64) bool {
@@ -335,6 +464,9 @@ func (engine Engine) snmpClient(device Device) *gosnmp.GoSNMP {
 		Timeout:   engine.Timeout,
 		Retries:   engine.Retries,
 		MaxOids:   32,
+	}
+	if engine.MaxRepetitions > 0 {
+		client.MaxRepetitions = engine.MaxRepetitions
 	}
 
 	if strings.TrimSpace(device.SNMPVersion) == "3" {

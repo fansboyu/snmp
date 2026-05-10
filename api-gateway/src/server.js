@@ -7,6 +7,7 @@ import { chartRoutes } from './routes/charts.js'
 import { healthRoutes } from './routes/health.js'
 import { deviceGroupRoutes } from './routes/device-groups.js'
 import { deviceRoutes } from './routes/devices.js'
+import { discoveryRoutes } from './routes/discovery.js'
 import { interfaceRoutes } from './routes/interfaces.js'
 import { metricRoutes } from './routes/metrics.js'
 
@@ -37,6 +38,7 @@ await app.register(alertRoutes, { prefix: '/api/alerts' })
 await app.register(chartRoutes, { prefix: '/api/charts' })
 await app.register(deviceGroupRoutes, { prefix: '/api/device-groups' })
 await app.register(deviceRoutes, { prefix: '/api/devices' })
+await app.register(discoveryRoutes, { prefix: '/api/discovery' })
 await app.register(interfaceRoutes, { prefix: '/api/interfaces' })
 await app.register(metricRoutes, { prefix: '/api/metrics' })
 

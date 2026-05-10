@@ -17,6 +17,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - snmp-monitor-net
 
   api-gateway:
     build:
@@ -27,11 +29,18 @@ services:
       HOST: 0.0.0.0
       DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
       WEB_ORIGIN: http://localhost:15173
+      ALERT_EMAIL_ENABLED: ${ALERT_EMAIL_ENABLED:-false}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_FROM: ${SMTP_FROM:-}
     ports:
       - "13000:3000"
     depends_on:
       postgres:
         condition: service_healthy
+    networks:
+      - snmp-monitor-net
 
   collector-go:
     build:
@@ -40,12 +49,68 @@ services:
     environment:
       DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
       COLLECT_INTERVAL_SECONDS: 60
+      CLEANUP_INTERVAL_SECONDS: 3600
+      METRIC_SAMPLE_RETENTION_DAYS: 30
+      INTERFACE_SAMPLE_RETENTION_DAYS: 30
+      RESOLVED_ALERT_RETENTION_DAYS: 90
+      CLEANUP_BATCH_SIZE: 5000
       SNMP_TIMEOUT_SECONDS: 3
       SNMP_RETRIES: 1
       WORKER_COUNT: 16
+      GETBULK_MAX_REPETITIONS: 25
+      ALERT_EMAIL_ENABLED: ${ALERT_EMAIL_ENABLED:-false}
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+      ALERT_EMAIL_SEND_RESOLVED: ${ALERT_EMAIL_SEND_RESOLVED:-true}
+      ALERT_EMAIL_SUBJECT_PREFIX: ${ALERT_EMAIL_SUBJECT_PREFIX:-[SNMP Monitor]}
     depends_on:
       postgres:
         condition: service_healthy
+      snmp-agent-v2c-router:
+        condition: service_started
+      snmp-agent-v2c-switch:
+        condition: service_started
+      snmp-agent-v3-router:
+        condition: service_started
+    networks:
+      - snmp-monitor-net
+
+  discovery-worker:
+    build:
+      context: ./collector-go
+      dockerfile: Dockerfile.discovery
+    container_name: snmp-monitor-discovery-worker
+    environment:
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      DISCOVERY_POLL_INTERVAL_SECONDS: 5
+      DISCOVERY_STALE_RUNNING_SECONDS: 1800
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - snmp-monitor-net
+
+  notifier:
+    build:
+      context: ./collector-go
+      dockerfile: Dockerfile.notifier
+    container_name: snmp-monitor-notifier
+    environment:
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+      SMTP_POLL_INTERVAL_SECONDS: ${SMTP_POLL_INTERVAL_SECONDS:-10}
+      SMTP_BATCH_SIZE: ${SMTP_BATCH_SIZE:-50}
+      SMTP_MAX_RETRIES: ${SMTP_MAX_RETRIES:-3}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - snmp-monitor-net
 
   web-vue3:
     build:
@@ -55,6 +120,42 @@ services:
       - "15173:80"
     depends_on:
       - api-gateway
+    networks:
+      - snmp-monitor-net
+
+  snmp-agent-v2c-router:
+    build:
+      context: ./docker/snmp-agent-v2c
+    container_name: snmp-agent-v2c-router
+    hostname: lab-v2c-router
+    networks:
+      snmp-monitor-net:
+        ipv4_address: 172.28.0.11
+
+  snmp-agent-v2c-switch:
+    build:
+      context: ./docker/snmp-agent-v2c
+    container_name: snmp-agent-v2c-switch
+    hostname: lab-v2c-switch
+    networks:
+      snmp-monitor-net:
+        ipv4_address: 172.28.0.12
+
+  snmp-agent-v3-router:
+    build:
+      context: ./docker/snmp-agent-v3
+    container_name: snmp-agent-v3-router
+    hostname: lab-v3-router
+    networks:
+      snmp-monitor-net:
+        ipv4_address: 172.28.0.13
 
 volumes:
   postgres-data:
+
+networks:
+  snmp-monitor-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24

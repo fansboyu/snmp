@@ -250,6 +250,13 @@ body {
   margin-top: 16px;
 }
 
+.card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .device-form {
   margin-bottom: 18px;
   padding: 16px;
@@ -332,6 +339,32 @@ body {
   margin-top: 12px;
   color: #16a34a;
   font-size: 13px;
+}
+
+.discovery-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 4px 16px;
+  align-items: start;
+}
+
+.discovery-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 14px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.discovery-import-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.discovery-import-actions .el-select {
+  width: 180px;
 }
 
 .metric-card__title {

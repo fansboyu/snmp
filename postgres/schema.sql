@@ -1,4 +1,4 @@
-create table if not exists oid_templates (
+﻿create table if not exists oid_templates (
   id bigserial primary key,
   name text not null unique,
   description text,
@@ -123,9 +123,52 @@ create table if not exists alert_notifications (
   channel text not null default 'web',
   target text,
   status text not null default 'pending',
+  subject text,
   message text,
+  error text,
+  retry_count integer not null default 0,
+  next_retry_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
-  sent_at timestamptz
+  sent_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists discovery_jobs (
+  id bigserial primary key,
+  cidr text not null,
+  port integer not null default 161,
+  snmp_version text not null default '2c',
+  community text,
+  timeout_ms integer not null default 1000,
+  retries integer not null default 0,
+  concurrency integer not null default 16,
+  status text not null default 'pending',
+  total_hosts integer not null default 0,
+  scanned_hosts integer not null default 0,
+  discovered_hosts integer not null default 0,
+  error_message text,
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists discovery_results (
+  id bigserial primary key,
+  job_id bigint not null references discovery_jobs(id) on delete cascade,
+  host inet not null,
+  port integer not null default 161,
+  snmp_version text not null default '2c',
+  sys_name text,
+  sys_descr text,
+  sys_object_id text,
+  response_ms integer,
+  status text not null default 'discovered',
+  device_id bigint references devices(id) on delete set null,
+  error_message text,
+  discovered_at timestamptz not null default now(),
+  imported_at timestamptz,
+  unique (job_id, host, port)
 );
 
 alter table devices add column if not exists group_id bigint references device_groups(id) on delete set null;
@@ -139,19 +182,28 @@ alter table devices add column if not exists snmp_v3_priv_passphrase text;
 alter table devices add column if not exists snmp_v3_context_name text;
 alter table metric_definitions add column if not exists metric_kind text not null default 'scalar';
 alter table metric_definitions add column if not exists table_oid text;
+alter table alert_notifications add column if not exists subject text;
+alter table alert_notifications add column if not exists error text;
+alter table alert_notifications add column if not exists retry_count integer not null default 0;
+alter table alert_notifications add column if not exists next_retry_at timestamptz not null default now();
+alter table alert_notifications add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists idx_devices_enabled on devices(enabled);
 create index if not exists idx_devices_group_id on devices(group_id);
 create index if not exists idx_device_groups_template_id on device_groups(template_id);
 create index if not exists idx_metric_samples_device_time on metric_samples(device_id, created_at desc);
 create index if not exists idx_metric_samples_metric_time on metric_samples(metric_id, created_at desc);
+create index if not exists idx_metric_samples_created_at on metric_samples(created_at);
 create index if not exists idx_device_interfaces_device_id on device_interfaces(device_id);
 create index if not exists idx_interface_samples_device_time on interface_metric_samples(device_id, created_at desc);
 create index if not exists idx_interface_samples_interface_time on interface_metric_samples(interface_id, created_at desc);
+create index if not exists idx_interface_samples_created_at on interface_metric_samples(created_at);
 create index if not exists idx_alert_rules_enabled on alert_rules(enabled);
 create unique index if not exists uq_alert_rules_name on alert_rules(name);
 create index if not exists idx_alert_events_status_time on alert_events(status, triggered_at desc);
 create index if not exists idx_alert_events_device_time on alert_events(device_id, triggered_at desc);
+create index if not exists idx_alert_events_resolved_cleanup
+  on alert_events(status, coalesce(resolved_at, last_seen_at, triggered_at));
 create unique index if not exists uq_alert_events_active_scope
   on alert_events (
     coalesce(rule_id, 0),
@@ -160,6 +212,16 @@ create unique index if not exists uq_alert_events_active_scope
     title
   )
   where status = 'active';
+create index if not exists idx_alert_notifications_pending
+  on alert_notifications(status, next_retry_at);
+create unique index if not exists uq_alert_notifications_event_channel_target_subject
+  on alert_notifications(event_id, channel, target, subject);
+create index if not exists idx_discovery_jobs_status_created
+  on discovery_jobs(status, created_at desc);
+create index if not exists idx_discovery_results_job_id
+  on discovery_results(job_id);
+create index if not exists idx_discovery_results_host
+  on discovery_results(host);
 
 insert into oid_templates (name, description)
 values ('默认 SNMP 模板', '内置系统指标和接口表指标')
