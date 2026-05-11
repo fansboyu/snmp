@@ -2,7 +2,10 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"snmp-monitor/collector-go/internal/collector"
@@ -175,6 +178,30 @@ func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		alter table alert_notifications add column if not exists retry_count integer not null default 0;
 		alter table alert_notifications add column if not exists next_retry_at timestamptz not null default now();
 		alter table alert_notifications add column if not exists updated_at timestamptz not null default now();
+		create table if not exists device_neighbors (
+			id bigserial primary key,
+			device_id bigint not null references devices(id) on delete cascade,
+			local_interface_id bigint references device_interfaces(id) on delete set null,
+			local_if_index integer,
+			local_port_id text,
+			local_port_descr text,
+			protocol text not null,
+			fingerprint text not null,
+			remote_chassis_id text,
+			remote_device_name text,
+			remote_port_id text,
+			remote_port_descr text,
+			remote_mgmt_address inet,
+			remote_sys_name text,
+			remote_sys_descr text,
+			remote_device_id bigint references devices(id) on delete set null,
+			remote_interface_id bigint references device_interfaces(id) on delete set null,
+			first_seen_at timestamptz not null default now(),
+			last_seen_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			stale boolean not null default false,
+			raw jsonb not null default '{}'::jsonb
+		);
 		create index if not exists idx_alert_notifications_pending
 			on alert_notifications(status, next_retry_at);
 		create unique index if not exists uq_alert_notifications_event_channel_target_subject
@@ -221,6 +248,16 @@ func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 			on discovery_results(job_id);
 		create index if not exists idx_discovery_results_host
 			on discovery_results(host);
+		alter table topology_links add column if not exists discovery_protocol text;
+		alter table topology_links add column if not exists neighbor_id bigint references device_neighbors(id) on delete set null;
+		alter table topology_links add column if not exists auto_discovered boolean not null default false;
+		alter table topology_links add column if not exists last_seen_at timestamptz;
+		create unique index if not exists uq_device_neighbors_scope on device_neighbors(fingerprint);
+		create index if not exists idx_device_neighbors_device_id on device_neighbors(device_id);
+		create index if not exists idx_device_neighbors_remote_device_id on device_neighbors(remote_device_id);
+		create index if not exists idx_device_neighbors_last_seen on device_neighbors(last_seen_at desc);
+		create index if not exists idx_topology_links_neighbor_id on topology_links(neighbor_id);
+		create unique index if not exists uq_topology_links_neighbor_id on topology_links(neighbor_id);
 	`)
 	return err
 }
@@ -395,6 +432,170 @@ func (store *PostgresStore) SaveInterfaceSamples(ctx context.Context, samples []
 		}
 	}
 	return nil
+}
+
+func (store *PostgresStore) SaveNeighbors(ctx context.Context, deviceID int64, neighbors []collector.NeighborInfo) error {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		update device_neighbors
+		set stale = true,
+			updated_at = now()
+		where device_id = $1
+	`, deviceID); err != nil {
+		return err
+	}
+
+	for _, neighbor := range neighbors {
+		raw, err := json.Marshal(neighbor.Raw)
+		if err != nil {
+			return err
+		}
+		if neighbor.LastSeenAt.IsZero() {
+			neighbor.LastSeenAt = time.Now().UTC()
+		}
+		_, err = tx.Exec(ctx, `
+			with local_interface as (
+				select id
+				from device_interfaces
+				where device_id = $1
+					and (
+						($2::integer is not null and if_index = $2)
+						or ($3 <> '' and (
+							lower(coalesce(if_name, '')) = lower($3)
+							or lower(coalesce(if_descr, '')) = lower($3)
+							or lower(coalesce(if_alias, '')) = lower($3)
+						))
+						or ($4 <> '' and (
+							lower(coalesce(if_name, '')) = lower($4)
+							or lower(coalesce(if_descr, '')) = lower($4)
+							or lower(coalesce(if_alias, '')) = lower($4)
+						))
+					)
+				order by case when $2::integer is not null and if_index = $2 then 0 else 1 end
+				limit 1
+			),
+			remote_device as (
+				select id
+				from devices
+				where ($11::inet is not null and host = $11::inet)
+					or ($8 <> '' and (
+						lower(name) = lower($8)
+						or lower(split_part(name, '.', 1)) = lower(split_part($8, '.', 1))
+					))
+					or ($12 <> '' and (
+						lower(name) = lower($12)
+						or lower(split_part(name, '.', 1)) = lower(split_part($12, '.', 1))
+					))
+				order by case when $11::inet is not null and host = $11::inet then 0 else 1 end
+				limit 1
+			),
+			remote_interface as (
+				select i.id
+				from device_interfaces i
+				join remote_device d on d.id = i.device_id
+				where ($9 <> '' and (
+						lower(coalesce(i.if_name, '')) = lower($9)
+						or lower(coalesce(i.if_descr, '')) = lower($9)
+						or lower(coalesce(i.if_alias, '')) = lower($9)
+					))
+					or ($10 <> '' and (
+						lower(coalesce(i.if_name, '')) = lower($10)
+						or lower(coalesce(i.if_descr, '')) = lower($10)
+						or lower(coalesce(i.if_alias, '')) = lower($10)
+					))
+				limit 1
+			)
+			insert into device_neighbors (
+				device_id,
+				local_interface_id,
+				local_if_index,
+				local_port_id,
+				local_port_descr,
+				protocol,
+				fingerprint,
+				remote_chassis_id,
+				remote_device_name,
+				remote_port_id,
+				remote_port_descr,
+				remote_mgmt_address,
+				remote_sys_name,
+				remote_sys_descr,
+				remote_device_id,
+				remote_interface_id,
+				last_seen_at,
+				updated_at,
+				stale,
+				raw
+			)
+			values (
+				$1,
+				(select id from local_interface),
+				$2,
+				nullif($3, ''),
+				nullif($4, ''),
+				$5,
+				$6,
+				nullif($7, ''),
+				nullif($8, ''),
+				nullif($9, ''),
+				nullif($10, ''),
+				$11,
+				nullif($12, ''),
+				nullif($13, ''),
+				(select id from remote_device),
+				(select id from remote_interface),
+				$14,
+				now(),
+				false,
+				$15::jsonb
+			)
+			on conflict (fingerprint)
+			do update set
+				local_interface_id = excluded.local_interface_id,
+				local_if_index = excluded.local_if_index,
+				local_port_id = excluded.local_port_id,
+				local_port_descr = excluded.local_port_descr,
+				remote_chassis_id = excluded.remote_chassis_id,
+				remote_device_name = excluded.remote_device_name,
+				remote_port_id = excluded.remote_port_id,
+				remote_port_descr = excluded.remote_port_descr,
+				remote_mgmt_address = excluded.remote_mgmt_address,
+				remote_sys_name = excluded.remote_sys_name,
+				remote_sys_descr = excluded.remote_sys_descr,
+				remote_device_id = excluded.remote_device_id,
+				remote_interface_id = excluded.remote_interface_id,
+				last_seen_at = excluded.last_seen_at,
+				updated_at = now(),
+				stale = false,
+				raw = excluded.raw
+		`,
+			deviceID,
+			nullInt(neighbor.LocalIfIndex),
+			neighbor.LocalPortID,
+			neighbor.LocalPortDescr,
+			neighbor.Protocol,
+			neighborFingerprint(neighbor),
+			neighbor.RemoteChassisID,
+			neighbor.RemoteDeviceName,
+			neighbor.RemotePortID,
+			neighbor.RemotePortDescr,
+			nullString(neighbor.RemoteMgmtAddress),
+			neighbor.RemoteSysName,
+			neighbor.RemoteSysDescr,
+			neighbor.LastSeenAt,
+			string(raw),
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 func (store *PostgresStore) ListAlertRules(ctx context.Context) ([]collector.AlertRule, error) {
@@ -717,4 +918,41 @@ func (store *PostgresStore) deleteOldRows(ctx context.Context, query string, ret
 			return total, nil
 		}
 	}
+}
+
+func neighborFingerprint(neighbor collector.NeighborInfo) string {
+	return fmt.Sprintf(
+		"%d|%s|%d|%s|%s|%s",
+		neighbor.DeviceID,
+		strings.ToLower(strings.TrimSpace(neighbor.Protocol)),
+		neighbor.LocalIfIndex,
+		strings.ToLower(strings.TrimSpace(firstNonEmpty(neighbor.LocalPortID, neighbor.LocalPortDescr))),
+		strings.ToLower(strings.TrimSpace(firstNonEmpty(neighbor.RemoteChassisID, neighbor.RemoteDeviceName, neighbor.RemoteSysName))),
+		strings.ToLower(strings.TrimSpace(firstNonEmpty(neighbor.RemotePortID, neighbor.RemotePortDescr))),
+	)
+}
+
+func nullInt(value int) interface{} {
+	if value == 0 {
+		return nil
+	}
+	return value
+}
+
+func nullString(value string) interface{} {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }

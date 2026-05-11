@@ -18,6 +18,7 @@ type Store interface {
 	SaveSamples(context.Context, []MetricSample) error
 	UpsertInterface(context.Context, InterfaceInfo) (int64, error)
 	SaveInterfaceSamples(context.Context, []InterfaceMetricSample) error
+	SaveNeighbors(context.Context, int64, []NeighborInfo) error
 	ListAlertRules(context.Context) ([]AlertRule, error)
 	UpsertAlertEvent(context.Context, AlertEvent) (int64, bool, error)
 	ResolveAlertEvent(context.Context, int64, int64, int64, string) (*AlertEvent, error)
@@ -167,6 +168,10 @@ func (engine Engine) collectDevice(ctx context.Context, device Device, metrics [
 
 	samples := engine.collectScalarMetrics(device, client, scalarMetrics)
 	interfaceSamples := engine.collectInterfaceMetrics(ctx, device, client, interfaceMetrics)
+	neighbors := engine.collectNeighbors(device, client)
+	if err := engine.Store.SaveNeighbors(ctx, device.ID, neighbors); err != nil {
+		log.Printf("save neighbors for %s failed: %v", device.Host, err)
+	}
 	return samples, interfaceSamples
 }
 
@@ -271,6 +276,14 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 	}
 
 	return samples
+}
+
+func (engine Engine) collectNeighbors(device Device, client *gosnmp.GoSNMP) []NeighborInfo {
+	now := time.Now().UTC()
+	neighbors := make([]NeighborInfo, 0)
+	neighbors = append(neighbors, collectLLDPNeighbors(device, client, now)...)
+	neighbors = append(neighbors, collectCDPNeighbors(device, client, now)...)
+	return neighbors
 }
 
 func (engine Engine) evaluateAlerts(ctx context.Context, device Device, samples []MetricSample, interfaceSamples []InterfaceMetricSample) error {
@@ -533,6 +546,201 @@ func snmpV3PrivProtocol(value string) gosnmp.SnmpV3PrivProtocol {
 	default:
 		return gosnmp.NoPriv
 	}
+}
+
+type lldpNeighborKey struct {
+	TimeMark     string
+	LocalPortNum string
+	RemoteIndex  string
+}
+
+type cdpNeighborKey struct {
+	IfIndex string
+	Index   string
+}
+
+type lldpNeighborRow struct {
+	LocalPortNum   string
+	RemoteChassis  string
+	RemotePortID   string
+	RemotePortDesc string
+	RemoteSysName  string
+	RemoteSysDesc  string
+	Raw            map[string]string
+}
+
+type cdpNeighborRow struct {
+	IfIndex          string
+	RemoteAddress   string
+	RemoteDeviceID  string
+	RemotePortID    string
+	RemotePlatform  string
+	RemoteCaps      string
+	Raw             map[string]string
+}
+
+func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []NeighborInfo {
+	localPortIDs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.3")
+	localPortDescs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.4")
+	if len(localPortIDs) == 0 && len(localPortDescs) == 0 {
+		return nil
+	}
+
+	rows := map[lldpNeighborKey]*lldpNeighborRow{}
+	walkLLDPColumn := func(columnOID string, apply func(*lldpNeighborRow, string)) {
+		_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+			parts := oidSuffixParts(columnOID, variable.Name)
+			if len(parts) != 3 {
+				return nil
+			}
+			key := lldpNeighborKey{TimeMark: parts[0], LocalPortNum: parts[1], RemoteIndex: parts[2]}
+			row := rows[key]
+			if row == nil {
+				row = &lldpNeighborRow{LocalPortNum: parts[1], Raw: map[string]string{}}
+				rows[key] = row
+			}
+			value := snmpValueText(variable.Value)
+			row.Raw[columnOID] = value
+			apply(row, value)
+			return nil
+		})
+	}
+
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.5", func(row *lldpNeighborRow, value string) { row.RemoteChassis = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.7", func(row *lldpNeighborRow, value string) { row.RemotePortID = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.8", func(row *lldpNeighborRow, value string) { row.RemotePortDesc = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.9", func(row *lldpNeighborRow, value string) { row.RemoteSysName = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.10", func(row *lldpNeighborRow, value string) { row.RemoteSysDesc = value })
+
+	neighbors := make([]NeighborInfo, 0, len(rows))
+	for _, row := range rows {
+		if row.RemoteChassis == "" && row.RemotePortID == "" && row.RemoteSysName == "" {
+			continue
+		}
+		localPortID := localPortIDs[row.LocalPortNum]
+		localPortDesc := localPortDescs[row.LocalPortNum]
+		neighbors = append(neighbors, NeighborInfo{
+			DeviceID:         device.ID,
+			LocalPortID:      localPortID,
+			LocalPortDescr:   localPortDesc,
+			Protocol:         "lldp",
+			RemoteChassisID:  row.RemoteChassis,
+			RemoteDeviceName: firstNonEmpty(row.RemoteSysName, row.RemoteChassis),
+			RemotePortID:     row.RemotePortID,
+			RemotePortDescr:  row.RemotePortDesc,
+			RemoteSysName:    row.RemoteSysName,
+			RemoteSysDescr:   row.RemoteSysDesc,
+			Raw:              row.Raw,
+			LastSeenAt:       now,
+		})
+	}
+	return neighbors
+}
+
+func collectCDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []NeighborInfo {
+	rows := map[cdpNeighborKey]*cdpNeighborRow{}
+	walkCDPColumn := func(columnOID string, apply func(*cdpNeighborRow, string)) {
+		_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+			parts := oidSuffixParts(columnOID, variable.Name)
+			if len(parts) < 2 {
+				return nil
+			}
+			key := cdpNeighborKey{IfIndex: parts[0], Index: parts[1]}
+			row := rows[key]
+			if row == nil {
+				row = &cdpNeighborRow{IfIndex: parts[0], Raw: map[string]string{}}
+				rows[key] = row
+			}
+			value := snmpValueText(variable.Value)
+			row.Raw[columnOID] = value
+			apply(row, value)
+			return nil
+		})
+	}
+
+	walkCDPColumn(".1.3.6.1.4.1.9.9.23.1.2.1.1.4", func(row *cdpNeighborRow, value string) { row.RemoteAddress = value })
+	walkCDPColumn(".1.3.6.1.4.1.9.9.23.1.2.1.1.6", func(row *cdpNeighborRow, value string) { row.RemoteDeviceID = value })
+	walkCDPColumn(".1.3.6.1.4.1.9.9.23.1.2.1.1.7", func(row *cdpNeighborRow, value string) { row.RemotePortID = value })
+	walkCDPColumn(".1.3.6.1.4.1.9.9.23.1.2.1.1.8", func(row *cdpNeighborRow, value string) { row.RemotePlatform = value })
+	walkCDPColumn(".1.3.6.1.4.1.9.9.23.1.2.1.1.9", func(row *cdpNeighborRow, value string) { row.RemoteCaps = value })
+
+	neighbors := make([]NeighborInfo, 0, len(rows))
+	for _, row := range rows {
+		if row.RemoteDeviceID == "" && row.RemotePortID == "" {
+			continue
+		}
+		ifIndex, _ := strconv.Atoi(row.IfIndex)
+		neighbors = append(neighbors, NeighborInfo{
+			DeviceID:          device.ID,
+			LocalIfIndex:      ifIndex,
+			Protocol:          "cdp",
+			RemoteChassisID:   row.RemoteDeviceID,
+			RemoteDeviceName:  row.RemoteDeviceID,
+			RemotePortID:      row.RemotePortID,
+			RemotePortDescr:   row.RemotePortID,
+			RemoteMgmtAddress: normalizeIPv4Text(row.RemoteAddress),
+			RemoteSysName:     row.RemoteDeviceID,
+			RemoteSysDescr:    row.RemotePlatform,
+			Raw:               row.Raw,
+			LastSeenAt:        now,
+		})
+	}
+	return neighbors
+}
+
+func walkTextColumn(client *gosnmp.GoSNMP, columnOID string) map[string]string {
+	values := map[string]string{}
+	_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+		parts := oidSuffixParts(columnOID, variable.Name)
+		if len(parts) != 1 {
+			return nil
+		}
+		values[parts[0]] = snmpValueText(variable.Value)
+		return nil
+	})
+	return values
+}
+
+func walkColumn(client *gosnmp.GoSNMP, columnOID string, walkFn func(gosnmp.SnmpPDU) error) error {
+	if err := client.BulkWalk(columnOID, walkFn); err != nil {
+		return client.Walk(columnOID, walkFn)
+	}
+	return nil
+}
+
+func oidSuffixParts(baseOID string, variableOID string) []string {
+	suffix := strings.TrimPrefix(oidKey(variableOID), oidKey(baseOID))
+	suffix = strings.TrimPrefix(suffix, ".")
+	if suffix == "" {
+		return nil
+	}
+	return strings.Split(suffix, ".")
+}
+
+func normalizeIPv4Text(value string) string {
+	value = strings.TrimSpace(value)
+	parts := strings.Split(value, ".")
+	if len(parts) < 4 {
+		return ""
+	}
+	last := parts[len(parts)-4:]
+	for _, part := range last {
+		number, err := strconv.Atoi(part)
+		if err != nil || number < 0 || number > 255 {
+			return ""
+		}
+	}
+	return strings.Join(last, ".")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func interfaceIndex(tableOID string, variableOID string) (int, bool) {

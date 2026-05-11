@@ -215,6 +215,92 @@ export interface DiscoveryResult {
   imported_at?: string | null
 }
 
+export interface TopologyMap {
+  id: string
+  name: string
+  description?: string | null
+  is_default: boolean
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TopologyNode {
+  id: string
+  map_id: string
+  device_id?: string | null
+  device_name?: string | null
+  device_host?: string | null
+  device_enabled?: boolean | null
+  group_name?: string | null
+  label: string
+  node_type: 'device' | 'network' | 'custom'
+  x: string | number
+  y: string | number
+  width: string | number
+  height: string | number
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TopologyLink {
+  id: string
+  map_id: string
+  source_node_id: string
+  target_node_id: string
+  source_interface_id?: string | null
+  source_interface_name?: string | null
+  target_interface_id?: string | null
+  target_interface_name?: string | null
+  label?: string | null
+  link_type: 'manual' | 'lldp' | 'cdp'
+  status: 'unknown' | 'up' | 'down'
+  discovery_protocol?: string | null
+  neighbor_id?: string | null
+  auto_discovered?: boolean
+  last_seen_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+export interface TopologyData {
+  map: TopologyMap
+  nodes: TopologyNode[]
+  links: TopologyLink[]
+}
+
+export interface DeviceNeighbor {
+  id: string
+  device_id: string
+  device_name: string
+  device_host: string
+  local_interface_id?: string | null
+  local_interface_name?: string | null
+  local_if_index?: number | null
+  local_port_id?: string | null
+  local_port_descr?: string | null
+  protocol: 'lldp' | 'cdp'
+  remote_chassis_id?: string | null
+  remote_device_name?: string | null
+  remote_port_id?: string | null
+  remote_port_descr?: string | null
+  remote_mgmt_address?: string | null
+  remote_sys_name?: string | null
+  remote_sys_descr?: string | null
+  remote_device_id?: string | null
+  remote_device_name_matched?: string | null
+  remote_interface_id?: string | null
+  remote_interface_name?: string | null
+  first_seen_at: string
+  last_seen_at: string
+  stale: boolean
+}
+
+export interface AutoSyncTopologyResponse {
+  created_nodes: number
+  updated_links: number
+  topology: TopologyData
+}
+
 export interface CreateDiscoveryJobPayload {
   cidr: string
   port: number
@@ -403,6 +489,72 @@ export async function importDiscoveryResults(payload: ImportDiscoveryResultsPayl
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
+  })
+}
+
+export async function getDefaultTopology(): Promise<TopologyData> {
+  return request('/api/topology/default')
+}
+
+export async function listTopologyNeighbors(params: Record<string, string | number> = {}): Promise<DeviceNeighbor[]> {
+  return request(`/api/topology/neighbors${querySuffix(params)}`)
+}
+
+export async function syncAutoTopology(): Promise<AutoSyncTopologyResponse> {
+  return request('/api/topology/default/auto-sync', {
+    method: 'POST'
+  })
+}
+
+export async function createTopologyNode(payload: Partial<TopologyNode>): Promise<TopologyNode> {
+  return request('/api/topology/default/nodes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function updateTopologyNode(id: string, payload: Partial<TopologyNode>): Promise<TopologyNode> {
+  return request(`/api/topology/nodes/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function deleteTopologyNode(id: string): Promise<{ id: string }> {
+  return request(`/api/topology/nodes/${id}`, {
+    method: 'DELETE'
+  })
+}
+
+export async function createTopologyLink(payload: Partial<TopologyLink>): Promise<TopologyLink> {
+  return request('/api/topology/default/links', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function updateTopologyLink(id: string, payload: Partial<TopologyLink>): Promise<TopologyLink> {
+  return request(`/api/topology/links/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function deleteTopologyLink(id: string): Promise<{ id: string }> {
+  return request(`/api/topology/links/${id}`, {
+    method: 'DELETE'
+  })
+}
+
+export async function saveTopologyLayout(nodes: Array<{ id: string; x: number; y: number; width?: number; height?: number }>): Promise<TopologyData> {
+  return request('/api/topology/default/layout', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nodes })
   })
 }
 

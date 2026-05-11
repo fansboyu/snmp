@@ -56,6 +56,23 @@ type InterfaceMetricSample struct {
 	CreatedAt   time.Time
 }
 
+type NeighborInfo struct {
+	DeviceID          int64
+	LocalIfIndex      int
+	LocalPortID       string
+	LocalPortDescr    string
+	Protocol          string
+	RemoteChassisID   string
+	RemoteDeviceName  string
+	RemotePortID      string
+	RemotePortDescr   string
+	RemoteMgmtAddress string
+	RemoteSysName     string
+	RemoteSysDescr    string
+	Raw               map[string]string
+	LastSeenAt        time.Time
+}
+
 type AlertRule struct {
 	ID          int64
 	Name        string

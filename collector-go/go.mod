@@ -1,9 +1,9 @@
 module snmp-monitor/collector-go
 
-go 1.17
+go 1.24.0
 
 require (
-	github.com/gosnmp/gosnmp v1.36.1
+	github.com/gosnmp/gosnmp v1.43.2
 	github.com/jackc/pgx/v4 v4.18.3
 )
 

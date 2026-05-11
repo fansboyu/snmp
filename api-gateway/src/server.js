@@ -10,6 +10,7 @@ import { deviceRoutes } from './routes/devices.js'
 import { discoveryRoutes } from './routes/discovery.js'
 import { interfaceRoutes } from './routes/interfaces.js'
 import { metricRoutes } from './routes/metrics.js'
+import { topologyRoutes } from './routes/topology.js'
 
 const app = Fastify({
   logger: true
@@ -41,6 +42,7 @@ await app.register(deviceRoutes, { prefix: '/api/devices' })
 await app.register(discoveryRoutes, { prefix: '/api/discovery' })
 await app.register(interfaceRoutes, { prefix: '/api/interfaces' })
 await app.register(metricRoutes, { prefix: '/api/metrics' })
+await app.register(topologyRoutes, { prefix: '/api/topology' })
 
 const port = Number(app.config.PORT)
 const host = app.config.HOST

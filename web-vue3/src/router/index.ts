@@ -9,6 +9,7 @@ import DiscoveryView from '../views/DiscoveryView.vue'
 import LatestDataView from '../views/LatestDataView.vue'
 import LoginView from '../views/LoginView.vue'
 import MetricsView from '../views/MetricsView.vue'
+import TopologyView from '../views/TopologyView.vue'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, title: '登录' } },
@@ -20,6 +21,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'dashboard', name: 'dashboard', component: DashboardView, meta: { title: '监控概览' } },
       { path: 'devices', name: 'devices', component: DevicesView, meta: { title: '设备管理' } },
       { path: 'discovery', name: 'discovery', component: DiscoveryView, meta: { title: '自动发现' } },
+      { path: 'topology', name: 'topology', component: TopologyView, meta: { title: '网络拓扑' } },
       { path: 'devices/:id', name: 'device-detail', component: DeviceDetailView, meta: { title: '设备监控' } },
       { path: 'metrics', name: 'metrics', component: MetricsView, meta: { title: '指标管理' } },
       { path: 'alerts', name: 'alerts', component: AlertsView, meta: { title: '告警中心' } },

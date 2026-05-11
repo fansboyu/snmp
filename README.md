@@ -107,6 +107,9 @@ PostgreSQL 数据库容器。
 | `alert_rules` | 告警规则，例如 CPU 阈值、接口 Down |
 | `alert_events` | 告警事件，记录 active/resolved 状态 |
 | `alert_notifications` | 告警通知记录，预留 Web/邮件/企业 IM 等渠道 |
+| `topology_maps` | 拓扑图配置，当前内置默认拓扑 |
+| `topology_nodes` | 拓扑节点，支持绑定设备或自定义节点 |
+| `topology_links` | 拓扑连线，支持手动链路和接口引用 |
 
 ### `snmp-monitor-api`
 
@@ -295,6 +298,7 @@ Vue 3 前端容器。
 - 添加 SNMP 设备
 - 管理 OID 模板、设备分组和接口表数据
 - 展示最新采集样本
+- 支持从 LLDP/CDP 邻居自动生成网络拓扑节点和链路，也可手工维护画布布局
 - 左侧侧边栏支持收起和展开，用户信息固定在侧边栏底部
 - 通过 Nginx 反向代理访问 API Gateway
 
@@ -306,6 +310,7 @@ Vue 3 前端容器。
 | `/dashboard` | 监控概览 | 展示 API 状态、统计卡片、CPU、接口流量、接口状态和采集趋势 |
 | `/devices` | 设备管理 | 查询设备、搜索设备、添加设备，点击设备名称进入详情 |
 | `/discovery` | 自动发现 | 创建 SNMP v2c CIDR 发现任务，查看结果并手动导入设备 |
+| `/topology` | 网络拓扑 | 自动同步 LLDP/CDP 邻居生成节点和链路，也支持手动添加设备/自定义节点 |
 | `/devices/:id` | 设备监控 | 展示单设备 CPU、接口状态、采集趋势、接口清单和各接口流量图 |
 | `/metrics` | 指标管理 | 管理 OID 模板、设备分组和接口表数据 |
 | `/alerts` | 告警中心 | 查看告警统计、当前/历史事件，管理告警规则 |
@@ -587,6 +592,64 @@ curl http://localhost:13000/api/metrics/definitions
 
 取消等待中或运行中的发现任务。
 
+### 拓扑接口
+
+#### `GET /api/topology/default`
+
+查询默认拓扑图，返回拓扑图元信息、节点和连线。若默认拓扑不存在，API 会自动创建。
+
+#### `POST /api/topology/default/auto-sync`
+
+根据已采集的 LLDP/CDP 邻居自动生成拓扑节点和连线，并返回更新后的默认拓扑数据。
+
+#### `POST /api/topology/default/nodes`
+
+新增拓扑节点。设备节点传入 `device_id`，自定义节点只需传入 `label` 和 `node_type`。
+
+```json
+{
+  "device_id": "1",
+  "label": "Core Switch",
+  "node_type": "device",
+  "x": 80,
+  "y": 80
+}
+```
+
+#### `PATCH /api/topology/nodes/:id`
+
+更新节点名称、类型、坐标或尺寸。
+
+#### `DELETE /api/topology/nodes/:id`
+
+删除节点，并级联删除该节点相关连线。
+
+#### `POST /api/topology/default/links`
+
+新增手动连线。
+
+```json
+{
+  "source_node_id": "1",
+  "target_node_id": "2",
+  "label": "Gi0/1 - Gi0/2",
+  "status": "unknown",
+  "link_type": "manual"
+}
+```
+
+#### `PATCH /api/topology/links/:id`
+
+更新连线标签、类型、状态或接口引用。
+
+#### `DELETE /api/topology/links/:id`
+
+删除连线。
+
+#### `PATCH /api/topology/default/layout`
+
+批量保存默认拓扑中节点的画布坐标和尺寸。
+
 ### 图表接口
 
 #### `GET /api/charts/cpu`
@@ -717,7 +780,7 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
 当前 MVP 可以继续使用普通 PostgreSQL：部署更简单，演示环境和小规模设备采集完全够用。
 
-v1.1.0 已内置 PostgreSQL 历史数据保留策略，默认保留：
+v1.4.0 已内置 PostgreSQL 历史数据保留策略，默认保留：
 
 - 标量样本 `metric_samples`：`30` 天。
 - 接口样本 `interface_metric_samples`：`30` 天。
