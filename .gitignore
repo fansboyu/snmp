@@ -30,6 +30,7 @@ Thumbs.db
 .vscode/
 
 # Local working notes / generated artifacts
+AGENTS.md
 backups/
 design-mockups/
 原则.txt

@@ -16,7 +16,6 @@
 .
 ├── api-gateway/          # Fastify API 网关
 ├── collector-go/         # Go SNMP 采集器
-├── docker/               # 本地 SNMP Agent 测试容器配置
 ├── postgres/             # PostgreSQL schema 与默认数据
 ├── scripts/              # 本地辅助脚本
 ├── web-vue3/             # Vue 3 前端
@@ -36,7 +35,6 @@ docker compose up -d --build
 - API Gateway：`http://localhost:13000`
 - API Health：`http://localhost:13000/health`
 - PostgreSQL：`localhost:5432`
-- 内置 SNMP Agent：通过 Docker 网络供采集器访问，不暴露到宿主机
 
 停止服务：
 
@@ -90,7 +88,7 @@ PostgreSQL 数据库容器。
 **初始化脚本**
 
 - `postgres/schema.sql`：创建表结构和索引
-- `postgres/seed.sql`：写入默认演示数据
+- `postgres/seed.sql`：初始化空种子，不写入演示设备
 
 **核心表**
 
@@ -193,19 +191,7 @@ Go SNMP 采集器容器。
 8. 邮件通知启用时，告警首次触发和恢复会写入 `alert_notifications` 队列。
 9. 按保留策略定时分批清理历史样本和已恢复告警事件。
 
-> 当前 Docker 版本已内置 3 个 SNMP Agent 容器并默认启用采集设备，因此启动后会自动产生真实采集样本。
-
-### 内置 SNMP Agent 容器
-
-用于本地联调和演示真实 SNMP 采集链路。
-
-| 容器 | IP | 协议 | 凭据 |
-| --- | --- | --- | --- |
-| `snmp-agent-v2c-router` | `172.28.0.11` | SNMP v2c | community `public` |
-| `snmp-agent-v2c-switch` | `172.28.0.12` | SNMP v2c | community `public` |
-| `snmp-agent-v3-router` | `172.28.0.13` | SNMP v3 authPriv | user `monitor`，auth `SHA256/auth-password`，priv `AES/priv-password` |
-
-这些容器不暴露宿主机端口，只在 Compose 内部网络供采集器访问。
+> 默认不包含内置 SNMP Agent 容器。请先在 `devices` 中添加你自己的 SNMP 设备，采集器才会开始产生样本。
 
 ### `snmp-monitor-notifier`
 
@@ -746,18 +732,6 @@ curl "http://localhost:13000/api/metrics/samples?deviceId=1&limit=20"
 
 Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
-### 默认设备
-
-初始化时不会再写入 CPU、接口、流量、告警事件等模拟样本；只写入可由采集器真实访问的 Docker SNMP Agent 设备。
-
-| 名称 | IP | SNMP 版本 | 凭据 | 是否启用 |
-| --- | --- | --- | --- | --- |
-| `Lab SNMPv2 Router` | `172.28.0.11` | `2c` | community `public` | `true` |
-| `Lab SNMPv2 Switch` | `172.28.0.12` | `2c` | community `public` | `true` |
-| `Lab SNMPv3 Router` | `172.28.0.13` | `3` | `monitor / auth-password / priv-password` | `true` |
-
-这些 IP 是 `docker-compose.yml` 中 `snmp-monitor-net` 网络的固定容器地址，采集器启动后会立刻通过 SNMP 采集真实容器数据。
-
 ### 默认指标定义
 
 | 名称 | OID | 单位 |
@@ -772,7 +746,7 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
 ### 默认样本与告警
 
-默认不再写入任何模拟样本、模拟接口清单或模拟告警事件。Dashboard、设备详情和最新数据页的数据由 `snmp-monitor-collector` 从内置 SNMP Agent 容器实时采集后写入。
+默认不写入任何模拟样本、模拟接口清单或模拟告警事件。Dashboard、设备详情和最新数据页的数据由 `snmp-monitor-collector` 从你接入的真实 SNMP 设备采集后写入。
 
 默认保留告警规则配置，例如 CPU 阈值和接口 Down 规则；告警事件只会由真实采集结果触发。
 
@@ -780,7 +754,7 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
 当前 MVP 可以继续使用普通 PostgreSQL：部署更简单，演示环境和小规模设备采集完全够用。
 
-v1.4.0 已内置 PostgreSQL 历史数据保留策略，默认保留：
+v1.4.1 已内置 PostgreSQL 历史数据保留策略，默认保留：
 
 - 标量样本 `metric_samples`：`30` 天。
 - 接口样本 `interface_metric_samples`：`30` 天。
