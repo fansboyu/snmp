@@ -18,9 +18,30 @@ export async function deviceRoutes(app) {
         d.snmp_v3_priv_passphrase,
         d.snmp_v3_context_name,
         d.enabled,
+        case
+          when d.enabled = true and activity.last_seen_at >= now() - interval '3 minutes' then 'online'
+          else 'offline'
+        end as online_status,
+        activity.last_seen_at,
         d.created_at
       from devices d
       left join device_groups g on g.id = d.group_id
+      left join lateral (
+        select max(last_seen_at) as last_seen_at
+        from (
+          select max(created_at) as last_seen_at
+          from metric_samples
+          where device_id = d.id
+          union all
+          select max(created_at) as last_seen_at
+          from interface_metric_samples
+          where device_id = d.id
+          union all
+          select max(last_seen_at) as last_seen_at
+          from device_interfaces
+          where device_id = d.id
+        ) activity_sources
+      ) activity on true
       order by d.id desc
     `)
     return result.rows

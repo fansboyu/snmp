@@ -23,7 +23,7 @@ const events = ref<AlertEvent[]>([])
 const rules = ref<AlertRule[]>([])
 const notifications = ref<AlertNotification[]>([])
 const eventStatus = ref<'active' | 'resolved' | ''>('active')
-const notificationStatus = ref<'pending' | 'sending' | 'sent' | 'failed' | ''>('')
+const notificationStatus = ref<'all' | 'pending' | 'sending' | 'sent' | 'failed'>('all')
 const resolvingId = ref('')
 const retryingNotificationId = ref('')
 const ruleForm = reactive({
@@ -45,7 +45,7 @@ async function loadData(): Promise<void> {
       getAlertSummary(),
       listAlertEvents({ status: eventStatus.value || '', limit: 200 }),
       listAlertRules(),
-      listAlertNotifications({ status: notificationStatus.value || '', limit: 100 })
+      listAlertNotifications({ status: notificationStatus.value === 'all' ? '' : notificationStatus.value, limit: 100 })
     ])
     summary.value = summaryResult
     events.value = eventResult
@@ -197,8 +197,8 @@ onMounted(loadData)
       <template #header>
         <div class="card-header-row">
           <span>邮件通知记录</span>
-          <el-select v-model="notificationStatus" placeholder="通知状态" clearable @change="loadData">
-            <el-option label="全部" value="" />
+          <el-select v-model="notificationStatus" placeholder="通知状态" @change="loadData">
+            <el-option label="全部" value="all" />
             <el-option label="待发送" value="pending" />
             <el-option label="发送中" value="sending" />
             <el-option label="已发送" value="sent" />

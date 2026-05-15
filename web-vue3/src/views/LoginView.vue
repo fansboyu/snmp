@@ -2,7 +2,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Lock, Monitor, User } from '@element-plus/icons-vue'
+import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 
 const route = useRoute()
@@ -18,7 +18,7 @@ const form = reactive({
 async function submit(): Promise<void> {
   loading.value = true
   try {
-    authStore.signIn(form.username, form.password)
+    await authStore.signIn(form.username, form.password)
     ElMessage.success('登录成功')
     await router.replace(String(route.query.redirect || '/dashboard'))
   } catch (error) {
@@ -34,22 +34,22 @@ async function submit(): Promise<void> {
     <section class="login-hero">
       <div class="login-brand">
         <div class="login-brand__logo">
-          <el-icon><Monitor /></el-icon>
+          <img src="/netlooker-logo.png" alt="netlooker logo" />
         </div>
         <div>
-          <h1>SNMP Monitor</h1>
+          <h1>netlooker</h1>
           <p>高性能网络设备采集与监控平台</p>
         </div>
       </div>
       <div class="login-copy">
-        <h2>Go Collector · Fastify Gateway · PostgreSQL</h2>
+        <h2>Go Collector / Fastify Gateway / PostgreSQL</h2>
         <p>统一管理设备、OID 指标、采集样本和运行状态。</p>
       </div>
     </section>
 
     <el-card class="login-card" shadow="never">
       <h2>登录控制台</h2>
-      <p class="login-card__desc">演示账号已预填，后续可对接真实认证接口。</p>
+      <p class="login-card__desc">演示账号已预填，管理员可在系统内修改本地演示密码。</p>
 
       <el-form :model="form" label-position="top" @submit.prevent="submit">
         <el-form-item label="用户名">

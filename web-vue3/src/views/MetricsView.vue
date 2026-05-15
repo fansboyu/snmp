@@ -60,8 +60,11 @@ async function loadData(): Promise<void> {
     definitions.value = definitionResult
     interfaces.value = interfaceResult
     interfaceSamples.value = sampleResult
-    if (!activeTemplateId.value && templateResult[0]) {
-      activeTemplateId.value = templateResult[0].id
+    if (!activeTemplateId.value) {
+      activeTemplateId.value = defaultTemplateId(templateResult)
+    }
+    if (!groupForm.template_id) {
+      groupForm.template_id = defaultTemplateId(templateResult)
     }
     await loadTemplateDefinitions()
   } catch (error) {
@@ -100,7 +103,7 @@ async function submitGroup(): Promise<void> {
   ElMessage.success('设备分组已创建')
   groupForm.name = ''
   groupForm.description = ''
-  groupForm.template_id = ''
+  groupForm.template_id = defaultTemplateId(templates.value)
   await loadData()
 }
 
@@ -119,6 +122,10 @@ async function attachDefinition(): Promise<void> {
 async function selectTemplate(row?: OidTemplate): Promise<void> {
   activeTemplateId.value = row?.id || ''
   await loadTemplateDefinitions()
+}
+
+function defaultTemplateId(items: OidTemplate[]): string {
+  return items.find((template) => template.name === '默认 SNMP 模板')?.id || items[0]?.id || ''
 }
 
 onMounted(loadData)
@@ -162,7 +169,7 @@ onMounted(loadData)
       <el-col :span="12">
         <el-card class="page-card" shadow="never">
           <template #header>设备分组</template>
-          <el-form class="compact-form" :model="groupForm" inline @submit.prevent="submitGroup">
+          <el-form class="compact-form group-form" :model="groupForm" inline @submit.prevent="submitGroup">
             <el-form-item label="名称">
               <el-input v-model="groupForm.name" placeholder="例如 核心网络" />
             </el-form-item>
@@ -171,7 +178,7 @@ onMounted(loadData)
                 <el-option v-for="template in templates" :key="template.id" :label="template.name" :value="template.id" />
               </el-select>
             </el-form-item>
-            <el-form-item>
+            <el-form-item class="group-form__actions">
               <el-button type="success" native-type="submit">创建分组</el-button>
             </el-form-item>
           </el-form>

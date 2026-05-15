@@ -1,7 +1,19 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, Collection, DataLine, Expand, Fold, House, Monitor, Search, Share, SwitchButton } from '@element-plus/icons-vue'
+import {
+  Bell,
+  Collection,
+  DataLine,
+  Expand,
+  Fold,
+  House,
+  Key,
+  Monitor,
+  Search,
+  Share,
+  SwitchButton
+} from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 
@@ -9,15 +21,47 @@ const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
 const sidebarCollapsed = ref(false)
+const passwordDialogVisible = ref(false)
+const passwordSaving = ref(false)
 const activeMenu = computed(() => route.path)
-const pageTitle = computed(() => String(route.meta.title || 'SNMP Monitor'))
-const userInitial = computed(() => authStore.displayName.slice(0, 1).toUpperCase())
+const pageTitle = computed(() => String(route.meta.title || 'netlooker'))
 const asideWidth = computed(() => (sidebarCollapsed.value ? '76px' : '232px'))
+
+const passwordForm = reactive({
+  currentPassword: '',
+  newPassword: '',
+  confirmPassword: ''
+})
 
 async function handleLogout(): Promise<void> {
   authStore.signOut()
   ElMessage.success('已退出登录')
   await router.replace('/login')
+}
+
+function openPasswordDialog(): void {
+  passwordForm.currentPassword = ''
+  passwordForm.newPassword = ''
+  passwordForm.confirmPassword = ''
+  passwordDialogVisible.value = true
+}
+
+function changePassword(): void {
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    ElMessage.error('两次输入的新密码不一致')
+    return
+  }
+
+  passwordSaving.value = true
+  try {
+    authStore.changeAdminPassword(passwordForm.currentPassword, passwordForm.newPassword)
+    ElMessage.success('管理员密码已更新')
+    passwordDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '密码修改失败')
+  } finally {
+    passwordSaving.value = false
+  }
 }
 </script>
 
@@ -25,10 +69,12 @@ async function handleLogout(): Promise<void> {
   <el-container class="app-shell" :class="{ 'app-shell--collapsed': sidebarCollapsed }">
     <el-aside :width="asideWidth" class="app-sidebar">
       <div class="brand">
-        <div class="brand__logo">S</div>
+        <div class="brand__logo">
+          <img src="/netlooker-logo.png" alt="netlooker logo" />
+        </div>
         <div class="brand__text">
-          <div class="brand__name">SNMP Monitor</div>
-          <div class="brand__sub">Go + Fastify + PostgreSQL</div>
+          <div class="brand__name">netlooker</div>
+          <div class="brand__sub">Network monitoring console</div>
         </div>
       </div>
 
@@ -72,12 +118,18 @@ async function handleLogout(): Promise<void> {
       </el-menu>
 
       <div class="sidebar-user">
-        <div class="sidebar-user__avatar">{{ userInitial }}</div>
         <div class="sidebar-user__meta">
           <div class="sidebar-user__name">{{ authStore.displayName }}</div>
           <div class="sidebar-user__role">系统管理员</div>
         </div>
-        <el-button :icon="SwitchButton" circle plain class="sidebar-user__logout" @click="handleLogout" />
+        <div class="sidebar-user__actions">
+          <el-tooltip content="修改密码" placement="top">
+            <el-button :icon="Key" circle plain class="sidebar-user__button" @click="openPasswordDialog" />
+          </el-tooltip>
+          <el-tooltip content="退出登录" placement="top">
+            <el-button :icon="SwitchButton" circle plain class="sidebar-user__button" @click="handleLogout" />
+          </el-tooltip>
+        </div>
       </div>
     </el-aside>
 
@@ -94,4 +146,22 @@ async function handleLogout(): Promise<void> {
       </el-main>
     </el-container>
   </el-container>
+
+  <el-dialog v-model="passwordDialogVisible" title="修改系统管理员密码" width="420px">
+    <el-form label-position="top" @submit.prevent="changePassword">
+      <el-form-item label="当前密码">
+        <el-input v-model="passwordForm.currentPassword" type="password" show-password autocomplete="current-password" />
+      </el-form-item>
+      <el-form-item label="新密码">
+        <el-input v-model="passwordForm.newPassword" type="password" show-password autocomplete="new-password" />
+      </el-form-item>
+      <el-form-item label="确认新密码">
+        <el-input v-model="passwordForm.confirmPassword" type="password" show-password autocomplete="new-password" />
+      </el-form-item>
+    </el-form>
+    <template #footer>
+      <el-button @click="passwordDialogVisible = false">取消</el-button>
+      <el-button type="primary" :loading="passwordSaving" @click="changePassword">保存</el-button>
+    </template>
+  </el-dialog>
 </template>

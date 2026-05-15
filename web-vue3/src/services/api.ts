@@ -15,6 +15,8 @@ export interface Device {
   snmp_v3_priv_passphrase?: string | null
   snmp_v3_context_name?: string | null
   enabled: boolean
+  online_status?: 'online' | 'offline'
+  last_seen_at?: string | null
   created_at?: string
 }
 
@@ -57,6 +59,16 @@ export interface MetricSample {
 export interface HealthStatus {
   status: string
   databaseTime: string
+}
+
+export interface AuthUser {
+  username: string
+  displayName: string
+}
+
+export interface LoginResponse {
+  token: string
+  user: AuthUser
 }
 
 export interface CreateDevicePayload {
@@ -325,6 +337,18 @@ export async function getHealth(): Promise<HealthStatus> {
   return request('/health')
 }
 
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  return request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password })
+  })
+}
+
+export async function getCurrentUser(): Promise<{ user: AuthUser }> {
+  return request('/api/auth/me')
+}
+
 export async function listDevices(): Promise<Device[]> {
   return request('/api/devices')
 }
@@ -564,9 +588,39 @@ function querySuffix(params: Record<string, string | number>): string {
   return query.toString() ? `?${query.toString()}` : ''
 }
 
+export const authTokenKey = 'snmp-monitor-token'
+
+export function getAuthToken(): string {
+  return localStorage.getItem(authTokenKey) || ''
+}
+
+export function setAuthToken(token: string): void {
+  localStorage.setItem(authTokenKey, token)
+}
+
+export function clearAuthToken(): void {
+  localStorage.removeItem(authTokenKey)
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(path, options)
+  const headers = new Headers(options?.headers)
+  const token = getAuthToken()
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(path, {
+    ...options,
+    headers
+  })
   if (!response.ok) {
+    if (response.status === 401) {
+      clearAuthToken()
+    }
+    const error = await response.json().catch(() => null)
+    if (error?.message) {
+      throw new Error(error.message)
+    }
     throw new Error(`请求失败：${response.status}`)
   }
   return response.json() as Promise<T>

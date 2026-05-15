@@ -23,14 +23,14 @@ const form = reactive({
   snmp_v3_priv_protocol: 'AES',
   snmp_v3_priv_passphrase: '',
   snmp_v3_context_name: '',
-  enabled: false
+  enabled: true
 })
 
 const filteredDevices = computed(() => {
   const normalized = keyword.value.trim().toLowerCase()
   if (!normalized) return devices.value
   return devices.value.filter((device) =>
-    `${device.name} ${device.host} ${device.group_name || ''} ${device.snmp_version || ''}`.toLowerCase().includes(normalized)
+    `${device.name} ${device.host} ${device.group_name || ''} ${device.snmp_version || ''} ${device.online_status || ''}`.toLowerCase().includes(normalized)
   )
 })
 
@@ -43,6 +43,9 @@ async function loadData(): Promise<void> {
     const [deviceResult, groupResult] = await Promise.all([listDevices(), listDeviceGroups()])
     devices.value = deviceResult
     groups.value = groupResult
+    if (!form.group_id) {
+      form.group_id = defaultGroupId(groupResult)
+    }
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '加载设备失败')
   } finally {
@@ -98,7 +101,20 @@ function resetForm(): void {
   form.snmp_v3_priv_protocol = 'AES'
   form.snmp_v3_priv_passphrase = ''
   form.snmp_v3_context_name = ''
-  form.enabled = false
+  form.enabled = true
+  form.group_id = defaultGroupId(groups.value)
+}
+
+function defaultGroupId(items: DeviceGroup[]): string {
+  return items.find((group) => group.name === '默认分组')?.id || items[0]?.id || ''
+}
+
+function onlineStatusType(status?: Device['online_status']): 'success' | 'danger' {
+  return status === 'online' ? 'success' : 'danger'
+}
+
+function onlineStatusText(status?: Device['online_status']): string {
+  return status === 'online' ? '在线' : '离线'
 }
 
 async function removeDevice(device: Device): Promise<void> {
@@ -214,17 +230,22 @@ onMounted(loadData)
       <el-table-column prop="group_name" label="分组" min-width="140">
         <template #default="{ row }">{{ row.group_name || '未分组' }}</template>
       </el-table-column>
+      <el-table-column label="采集状态" width="120">
+        <template #default="{ row }">
+          <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="在线状态" width="120">
+        <template #default="{ row }">
+          <el-tag :type="onlineStatusType(row.online_status)">{{ onlineStatusText(row.online_status) }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="snmp_version" label="SNMP" width="110">
         <template #default="{ row }">
           <el-tag :type="row.snmp_version === '3' ? 'warning' : 'info'">v{{ row.snmp_version || '2c' }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="port" label="端口" width="100" />
-      <el-table-column label="采集状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
-        </template>
-      </el-table-column>
       <el-table-column prop="created_at" label="创建时间" width="220" />
       <el-table-column label="操作" width="120" fixed="right">
         <template #default="{ row }">

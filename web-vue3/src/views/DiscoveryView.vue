@@ -33,7 +33,7 @@ const form = reactive({
 
 const importForm = reactive({
   group_id: '',
-  enabled: false
+  enabled: true
 })
 
 const selectedJob = computed(() => jobs.value.find((job) => job.id === selectedJobId.value) ?? null)
@@ -53,6 +53,9 @@ async function loadData(): Promise<void> {
     ])
     jobs.value = jobResult
     groups.value = groupResult
+    if (!importForm.group_id) {
+      importForm.group_id = defaultGroupId(groupResult)
+    }
     if (!selectedJobId.value && jobResult[0]) {
       selectedJobId.value = jobResult[0].id
     }
@@ -138,6 +141,10 @@ function statusType(status: DiscoveryJob['status']): 'info' | 'warning' | 'succe
 
 function canCancel(job: DiscoveryJob): boolean {
   return job.status === 'pending' || job.status === 'running'
+}
+
+function defaultGroupId(items: DeviceGroup[]): string {
+  return items.find((group) => group.name === '默认分组')?.id || items[0]?.id || ''
 }
 
 onMounted(() => {

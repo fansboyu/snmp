@@ -7,7 +7,6 @@ import MetricCard from '../components/MetricCard.vue'
 import {
   getCollectionTrendChart,
   getCpuChart,
-  getHealth,
   getInterfaceStatusChart,
   getInterfaceTrafficChart,
   listDevices,
@@ -15,14 +14,12 @@ import {
   listMetricSamples,
   type ChartPoint,
   type Device,
-  type HealthStatus,
   type InterfaceStatusPoint,
   type MetricDefinition,
   type MetricSample
 } from '../services/api'
 
 const loading = ref(false)
-const health = ref<HealthStatus | null>(null)
 const devices = ref<Device[]>([])
 const definitions = ref<MetricDefinition[]>([])
 const samples = ref<MetricSample[]>([])
@@ -99,7 +96,6 @@ async function loadData(): Promise<void> {
   loading.value = true
   try {
     const [
-      healthResult,
       deviceResult,
       definitionResult,
       sampleResult,
@@ -108,7 +104,6 @@ async function loadData(): Promise<void> {
       statusResult,
       trendResult
     ] = await Promise.all([
-      getHealth(),
       listDevices(),
       listMetricDefinitions(),
       listMetricSamples({ limit: 8 }),
@@ -117,7 +112,6 @@ async function loadData(): Promise<void> {
       getInterfaceStatusChart(),
       getCollectionTrendChart({ range: '1h' })
     ])
-    health.value = healthResult
     devices.value = deviceResult
     definitions.value = definitionResult
     samples.value = sampleResult
@@ -158,10 +152,10 @@ onMounted(loadData)
 
     <el-row :gutter="16">
       <el-col :span="6">
-        <MetricCard title="API 状态" :value="health?.status || '-'" description="Fastify API Gateway" type="success" />
+        <MetricCard title="在线设备" :value="enabledDevices" :description="`启用 ${enabledDevices} 台`" type="success" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="设备数量" :value="devices.length" :description="`启用 ${enabledDevices} 台`" />
+        <MetricCard title="设备总数" :value="devices.length" :description="`已纳管 ${devices.length} 台`" />
       </el-col>
       <el-col :span="6">
         <MetricCard title="指标定义" :value="definitions.length" :description="`接口指标 ${interfaceMetricCount} 个`" type="warning" />

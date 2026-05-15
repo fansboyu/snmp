@@ -29,6 +29,10 @@ services:
       HOST: 0.0.0.0
       DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
       WEB_ORIGIN: http://localhost:15173
+      JWT_SECRET: ${JWT_SECRET:-snmp-monitor-dev-secret}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       ALERT_EMAIL_ENABLED: ${ALERT_EMAIL_ENABLED:-false}
       ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
       SMTP_HOST: ${SMTP_HOST:-}
