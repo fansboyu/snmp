@@ -25,6 +25,8 @@
 
 ## Docker 快速启动
 
+仓库根目录已内置默认 `.env`，克隆后可直接构建启动；生产环境建议至少修改 `JWT_SECRET` 和 `ADMIN_PASSWORD`。
+
 ```powershell
 docker compose up -d --build
 ```
@@ -754,7 +756,7 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 
 当前 MVP 可以继续使用普通 PostgreSQL：部署更简单，演示环境和小规模设备采集完全够用。
 
-v1.5.0 已内置 PostgreSQL 历史数据保留策略，默认保留：
+v1.5.1 已内置 PostgreSQL 历史数据保留策略，默认保留：
 
 - 标量样本 `metric_samples`：`30` 天。
 - 接口样本 `interface_metric_samples`：`30` 天。
