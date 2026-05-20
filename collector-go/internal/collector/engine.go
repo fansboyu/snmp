@@ -150,13 +150,17 @@ func (engine Engine) collectOnce(ctx context.Context) error {
 
 func (engine Engine) collectDevice(ctx context.Context, device Device, metrics []MetricDefinition) ([]MetricSample, []InterfaceMetricSample) {
 	scalarMetrics := make([]MetricDefinition, 0, len(metrics))
+	walkMetrics := make([]MetricDefinition, 0, len(metrics))
 	interfaceMetrics := make([]MetricDefinition, 0, len(metrics))
 	for _, metric := range metrics {
-		if metric.MetricKind == "interface" {
+		switch metric.MetricKind {
+		case "interface":
 			interfaceMetrics = append(interfaceMetrics, metric)
-			continue
+		case "walk":
+			walkMetrics = append(walkMetrics, metric)
+		default:
+			scalarMetrics = append(scalarMetrics, metric)
 		}
-		scalarMetrics = append(scalarMetrics, metric)
 	}
 
 	client := engine.snmpClient(device)
@@ -167,6 +171,7 @@ func (engine Engine) collectDevice(ctx context.Context, device Device, metrics [
 	defer client.Conn.Close()
 
 	samples := engine.collectScalarMetrics(device, client, scalarMetrics)
+	samples = append(samples, engine.collectWalkMetrics(device, client, walkMetrics)...)
 	interfaceSamples := engine.collectInterfaceMetrics(ctx, device, client, interfaceMetrics)
 	neighbors := engine.collectNeighbors(device, client)
 	if err := engine.Store.SaveNeighbors(ctx, device.ID, neighbors); err != nil {
@@ -205,6 +210,52 @@ func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, 
 			MetricID:   metric.ID,
 			MetricName: metric.Name,
 			Value:      snmpValueText(variable.Value),
+			CreatedAt:  now,
+		})
+	}
+
+	return samples
+}
+
+func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) []MetricSample {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	samples := make([]MetricSample, 0, len(metrics))
+	for _, metric := range metrics {
+		tableOID := metric.TableOID
+		if tableOID == "" {
+			tableOID = metric.OID
+		}
+
+		values := make([]float64, 0)
+		walkFn := func(variable gosnmp.SnmpPDU) error {
+			value, ok := snmpNumericValue(variable.Value)
+			if !ok {
+				return nil
+			}
+			values = append(values, value)
+			return nil
+		}
+
+		if err := client.BulkWalk(tableOID, walkFn); err != nil {
+			values = values[:0]
+			log.Printf("bulk walk %s %s failed, fallback to walk: %v", device.Host, tableOID, err)
+			if walkErr := client.Walk(tableOID, walkFn); walkErr != nil {
+				log.Printf("walk %s %s failed: %v", device.Host, tableOID, walkErr)
+				continue
+			}
+		}
+		if len(values) == 0 {
+			continue
+		}
+		samples = append(samples, MetricSample{
+			DeviceID:   device.ID,
+			MetricID:   metric.ID,
+			MetricName: metric.Name,
+			Value:      formatFloat(aggregateValues(values, metric.AggregateMethod)),
 			CreatedAt:  now,
 		})
 	}
@@ -570,13 +621,13 @@ type lldpNeighborRow struct {
 }
 
 type cdpNeighborRow struct {
-	IfIndex          string
-	RemoteAddress   string
-	RemoteDeviceID  string
-	RemotePortID    string
-	RemotePlatform  string
-	RemoteCaps      string
-	Raw             map[string]string
+	IfIndex        string
+	RemoteAddress  string
+	RemoteDeviceID string
+	RemotePortID   string
+	RemotePlatform string
+	RemoteCaps     string
+	Raw            map[string]string
 }
 
 func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []NeighborInfo {
@@ -771,6 +822,55 @@ func snmpValueText(value interface{}) string {
 		}
 		return fmt.Sprint(typed)
 	}
+}
+
+func snmpNumericValue(value interface{}) (float64, bool) {
+	text := strings.TrimSpace(snmpValueText(value))
+	if text == "" {
+		return 0, false
+	}
+	number, err := strconv.ParseFloat(text, 64)
+	return number, err == nil
+}
+
+func aggregateValues(values []float64, method string) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+
+	switch strings.ToLower(strings.TrimSpace(method)) {
+	case "avg", "average":
+		var total float64
+		for _, value := range values {
+			total += value
+		}
+		return total / float64(len(values))
+	case "sum":
+		var total float64
+		for _, value := range values {
+			total += value
+		}
+		return total
+	case "first":
+		return values[0]
+	case "latest", "last":
+		return values[len(values)-1]
+	default:
+		maximum := values[0]
+		for _, value := range values[1:] {
+			if value > maximum {
+				maximum = value
+			}
+		}
+		return maximum
+	}
+}
+
+func formatFloat(value float64) string {
+	if value == float64(int64(value)) {
+		return strconv.FormatInt(int64(value), 10)
+	}
+	return strconv.FormatFloat(value, 'f', 2, 64)
 }
 
 func community(device Device, fallback string) string {

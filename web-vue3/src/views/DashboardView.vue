@@ -9,6 +9,7 @@ import {
   getCpuChart,
   getInterfaceStatusChart,
   getInterfaceTrafficChart,
+  getMemoryChart,
   listDevices,
   listMetricDefinitions,
   listMetricSamples,
@@ -24,6 +25,7 @@ const devices = ref<Device[]>([])
 const definitions = ref<MetricDefinition[]>([])
 const samples = ref<MetricSample[]>([])
 const cpuSeries = ref<ChartPoint[]>([])
+const memorySeries = ref<ChartPoint[]>([])
 const trafficSeries = ref<ChartPoint[]>([])
 const statusSeries = ref<InterfaceStatusPoint[]>([])
 const trendSeries = ref<ChartPoint[]>([])
@@ -44,6 +46,22 @@ const cpuChartOptions = computed<EChartsOption>(() => ({
     symbolSize: 6,
     areaStyle: { color: 'rgba(37, 99, 235, 0.16)' },
     data: cpuSeries.value.map((point) => point.value ?? 0)
+  }]
+}))
+
+const memoryChartOptions = computed<EChartsOption>(() => ({
+  color: ['#0f766e'],
+  grid: { left: 42, right: 18, top: 26, bottom: 34 },
+  tooltip: { trigger: 'axis', valueFormatter: (value) => `${Number(value || 0).toFixed(1)}%` },
+  xAxis: { type: 'category', boundaryGap: false, data: memorySeries.value.map((point) => formatTime(point.time)) },
+  yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' } },
+  series: [{
+    name: 'Memory',
+    type: 'line',
+    smooth: true,
+    symbolSize: 6,
+    areaStyle: { color: 'rgba(15, 118, 110, 0.16)' },
+    data: memorySeries.value.map((point) => point.value ?? 0)
   }]
 }))
 
@@ -100,6 +118,7 @@ async function loadData(): Promise<void> {
       definitionResult,
       sampleResult,
       cpuResult,
+      memoryResult,
       trafficResult,
       statusResult,
       trendResult
@@ -108,6 +127,7 @@ async function loadData(): Promise<void> {
       listMetricDefinitions(),
       listMetricSamples({ limit: 8 }),
       getCpuChart({ range: '1h' }),
+      getMemoryChart({ range: '1h' }),
       getInterfaceTrafficChart({ range: '1h' }),
       getInterfaceStatusChart(),
       getCollectionTrendChart({ range: '1h' })
@@ -116,6 +136,7 @@ async function loadData(): Promise<void> {
     definitions.value = definitionResult
     samples.value = sampleResult
     cpuSeries.value = cpuResult
+    memorySeries.value = memoryResult
     trafficSeries.value = trafficResult
     statusSeries.value = statusResult
     trendSeries.value = trendResult
@@ -168,6 +189,9 @@ onMounted(loadData)
     <el-row :gutter="16" class="dashboard-row">
       <el-col :span="12">
         <EChartCard title="CPU 使用率" description="最近 1 小时平均 CPU 趋势" :options="cpuChartOptions" />
+      </el-col>
+      <el-col :span="12">
+        <EChartCard title="内存使用率" description="最近 1 小时平均内存趋势" :options="memoryChartOptions" />
       </el-col>
       <el-col :span="12">
         <EChartCard title="接口入/出流量" description="基于 ifInOctets / ifOutOctets 自动换算 bps" :options="trafficChartOptions" />

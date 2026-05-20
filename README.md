@@ -157,7 +157,7 @@ Go SNMP 采集器容器。
 - 将采集结果写入 `metric_samples`
 - 支持 SNMP v2c 与 SNMP v3（noAuthNoPriv、authNoPriv、authPriv）
 - 使用 worker pool 控制并发采集数量
-- 接口表指标优先使用 GetBulk，失败时自动回退到普通 Walk
+- 接口表指标和通用 Walk 指标优先使用 GetBulk，失败时自动回退到普通 Walk
 - 支持采集周期、超时、重试、worker 数量配置
 
 **环境变量**
@@ -187,7 +187,7 @@ Go SNMP 采集器容器。
 2. 按 `COLLECT_INTERVAL_SECONDS` 周期循环采集。
 3. 查询 `devices.enabled = true` 的设备。
 4. 按设备分组加载绑定的 OID 模板。
-5. 标量指标执行 SNMP `Get`，接口表指标优先执行 SNMP `BulkWalk`，失败时回退到 `Walk`。
+5. 标量指标执行 SNMP `Get`，通用 Walk 指标按聚合方式写入单个样本，接口表指标优先执行 SNMP `BulkWalk`，失败时回退到 `Walk`。
 6. 写入 `metric_samples`、`device_interfaces` 和 `interface_metric_samples`。
 7. 根据 CPU 阈值和接口 Down 规则生成或恢复告警事件。
 8. 邮件通知启用时，告警首次触发和恢复会写入 `alert_notifications` 队列。
@@ -282,9 +282,9 @@ Vue 3 前端容器。
 - 提供 Web 管理控制台
 - 提供本地演示登录页
 - 展示监控概览、CPU 趋势、接口流量、接口状态和采集趋势图表
-- 展示设备列表，设备名称可点击进入单设备监控详情
+- 展示设备列表，设备名称可点击进入单设备监控详情，并可在列表中直接调整设备分组
 - 添加 SNMP 设备
-- 管理 OID 模板、设备分组和接口表数据
+- 管理 OID 模板、设备分组绑定模板和接口表数据
 - 展示最新采集样本
 - 支持从 LLDP/CDP 邻居自动生成网络拓扑节点和链路，也可手工维护画布布局
 - 左侧侧边栏支持收起和展开，用户信息固定在侧边栏底部
@@ -296,11 +296,11 @@ Vue 3 前端容器。
 | --- | --- | --- |
 | `/login` | 登录页 | 本地演示登录，默认账号 `admin / admin123` |
 | `/dashboard` | 监控概览 | 展示 API 状态、统计卡片、CPU、接口流量、接口状态和采集趋势 |
-| `/devices` | 设备管理 | 查询设备、搜索设备、添加设备，点击设备名称进入详情 |
+| `/devices` | 设备管理 | 查询设备、搜索设备、添加设备、修改设备分组，点击设备名称进入详情 |
 | `/discovery` | 自动发现 | 创建 SNMP v2c CIDR 发现任务，查看结果并手动导入设备 |
 | `/topology` | 网络拓扑 | 自动同步 LLDP/CDP 邻居生成节点和链路，也支持手动添加设备/自定义节点 |
 | `/devices/:id` | 设备监控 | 展示单设备 CPU、接口状态、采集趋势、接口清单和各接口流量图 |
-| `/metrics` | 指标管理 | 管理 OID 模板、设备分组和接口表数据 |
+| `/metrics` | 指标管理 | 管理 OID 模板、设备分组绑定模板和接口表数据 |
 | `/alerts` | 告警中心 | 查看告警统计、当前/历史事件，管理告警规则 |
 | `/latest` | 最新数据 | 展示最近采集样本 |
 
@@ -385,6 +385,10 @@ curl http://localhost:13000/api/devices
 #### `POST /api/devices`
 
 新增设备。
+
+#### `PATCH /api/devices/:id`
+
+更新设备信息。页面当前用于调整设备分组，`group_id` 传 `null` 可清空分组。
 
 **请求体**
 
@@ -497,8 +501,11 @@ curl http://localhost:13000/api/metrics/definitions
 | `name` | string | 指标名称 |
 | `oid` | string | SNMP OID |
 | `unit` | string | 单位 |
-| `metric_kind` | string | 指标类型，`scalar` 或 `interface` |
+| `metric_kind` | string | 指标类型，`scalar`、`walk` 或 `interface` |
 | `table_oid` | string | 接口表基础 OID |
+| `aggregate_method` | string | Walk 指标聚合方式，例如 `max`、`avg`、`sum`、`latest`、`first` |
+| `display_group` | string | 图表归类，例如 `cpu`、`memory` |
+| `vendor` | string | 厂商标识，例如 `huawei` |
 | `enabled` | boolean | 是否启用 |
 
 #### `GET /api/metrics/templates`
@@ -524,6 +531,10 @@ curl http://localhost:13000/api/metrics/definitions
 #### `POST /api/device-groups`
 
 新增设备分组，字段包括 `name`、`description`、`template_id`。
+
+#### `PATCH /api/device-groups/:id`
+
+更新设备分组，支持修改绑定模板，`template_id` 传 `null` 可清空模板绑定。
 
 #### `GET /api/interfaces`
 
@@ -644,6 +655,10 @@ curl http://localhost:13000/api/metrics/definitions
 
 查询 CPU 使用率趋势，可使用 `deviceId`、`range` 过滤。`range` 支持 `1h`、`6h`、`24h`。
 
+#### `GET /api/charts/memory`
+
+查询内存使用率趋势，可使用 `deviceId`、`range` 过滤。`range` 支持 `1h`、`6h`、`24h`。
+
 #### `GET /api/charts/interface-traffic`
 
 查询接口入/出流量趋势，可使用 `deviceId`、`interfaceId`、`range` 过滤。接口流量由相邻 `ifInOctets`、`ifOutOctets` 样本换算为 bps。
@@ -745,6 +760,10 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 | `ifOperStatus` | `.1.3.6.1.2.1.2.2.1.8` |  |
 | `ifInOctets` | `.1.3.6.1.2.1.2.2.1.10` | `bytes` |
 | `ifOutOctets` | `.1.3.6.1.2.1.2.2.1.16` | `bytes` |
+| `huaweiCpuUsage` | `.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5` | `%` |
+| `huaweiMemoryUsage` | `.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7` | `%` |
+
+默认模板会包含 Huawei CPU/内存 Walk 指标，已有默认分组设备升级后也会自动尝试采集；同时内置 `华为 SNMP 模板`，后续可按厂商或设备类型创建新模板，把对应 OID 以 `walk + 聚合方式` 维护进去。
 
 ### 默认样本与告警
 

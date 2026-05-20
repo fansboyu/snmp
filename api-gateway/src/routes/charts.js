@@ -21,7 +21,31 @@ export async function chartRoutes(app) {
         join metric_definitions m on m.id = s.metric_id
         where s.created_at >= now() - $2::interval
           and ($1::bigint is null or s.device_id = $1)
-          and (m.name ilike '%cpu%' or m.name = 'hrProcessorLoad')
+          and (m.display_group = 'cpu' or m.name ilike '%cpu%' or m.name = 'hrProcessorLoad')
+        group by 1
+        order by 1
+      `,
+      [deviceId ?? null, interval]
+    )
+    return result.rows.map((row) => ({
+      time: row.time,
+      value: row.value === null ? null : Number(row.value)
+    }))
+  })
+
+  app.get('/memory', async (request) => {
+    const deviceId = request.query.deviceId
+    const interval = rangeInterval(request.query.range)
+    const result = await app.db.query(
+      `
+        select
+          date_trunc('minute', s.created_at) as time,
+          avg(nullif(regexp_replace(s.value_text, '[^0-9.]+', '', 'g'), '')::numeric) as value
+        from metric_samples s
+        join metric_definitions m on m.id = s.metric_id
+        where s.created_at >= now() - $2::interval
+          and ($1::bigint is null or s.device_id = $1)
+          and (m.display_group = 'memory' or m.name ilike '%mem%' or m.name ilike '%memory%')
         group by 1
         order by 1
       `,

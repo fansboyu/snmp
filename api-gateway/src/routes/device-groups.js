@@ -36,18 +36,19 @@ export async function deviceGroupRoutes(app) {
   app.patch('/:id', async (request) => {
     const { id } = request.params
     const { name, description, template_id } = request.body
+    const hasTemplateId = Object.prototype.hasOwnProperty.call(request.body, 'template_id')
     const result = await app.db.query(
       `
         update device_groups
         set
           name = coalesce($2, name),
           description = coalesce($3, description),
-          template_id = coalesce($4, template_id),
+          template_id = case when $4::boolean then $5 else template_id end,
           updated_at = now()
         where id = $1
         returning id, name, description, template_id, created_at, updated_at
       `,
-      [id, name, description, template_id]
+      [id, name, description, hasTemplateId, template_id]
     )
     return result.rows[0]
   })

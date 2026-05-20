@@ -141,6 +141,7 @@ export async function deviceRoutes(app) {
       snmp_v3_context_name,
       enabled
     } = request.body
+    const hasGroupId = Object.prototype.hasOwnProperty.call(request.body, 'group_id')
     const result = await app.db.query(
       `
         update devices
@@ -148,17 +149,17 @@ export async function deviceRoutes(app) {
           name = coalesce($2, name),
           host = coalesce($3, host),
           port = coalesce($4, port),
-          group_id = coalesce($5, group_id),
-          community = coalesce($6, community),
-          snmp_version = coalesce($7, snmp_version),
-          snmp_v3_username = coalesce($8, snmp_v3_username),
-          snmp_v3_security_level = coalesce($9, snmp_v3_security_level),
-          snmp_v3_auth_protocol = coalesce(nullif($10, ''), snmp_v3_auth_protocol),
-          snmp_v3_auth_passphrase = coalesce(nullif($11, ''), snmp_v3_auth_passphrase),
-          snmp_v3_priv_protocol = coalesce(nullif($12, ''), snmp_v3_priv_protocol),
-          snmp_v3_priv_passphrase = coalesce(nullif($13, ''), snmp_v3_priv_passphrase),
-          snmp_v3_context_name = coalesce(nullif($14, ''), snmp_v3_context_name),
-          enabled = coalesce($15, enabled),
+          group_id = case when $5::boolean then $6 else group_id end,
+          community = coalesce($7, community),
+          snmp_version = coalesce($8, snmp_version),
+          snmp_v3_username = coalesce($9, snmp_v3_username),
+          snmp_v3_security_level = coalesce($10, snmp_v3_security_level),
+          snmp_v3_auth_protocol = coalesce(nullif($11, ''), snmp_v3_auth_protocol),
+          snmp_v3_auth_passphrase = coalesce(nullif($12, ''), snmp_v3_auth_passphrase),
+          snmp_v3_priv_protocol = coalesce(nullif($13, ''), snmp_v3_priv_protocol),
+          snmp_v3_priv_passphrase = coalesce(nullif($14, ''), snmp_v3_priv_passphrase),
+          snmp_v3_context_name = coalesce(nullif($15, ''), snmp_v3_context_name),
+          enabled = coalesce($16, enabled),
           updated_at = now()
         where id = $1
         returning
@@ -185,6 +186,7 @@ export async function deviceRoutes(app) {
         name,
         host,
         port,
+        hasGroupId,
         group_id,
         community,
         snmp_version,

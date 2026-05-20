@@ -43,6 +43,9 @@ create table if not exists metric_definitions (
   unit text,
   metric_kind text not null default 'scalar',
   table_oid text,
+  aggregate_method text not null default 'latest',
+  display_group text,
+  vendor text,
   enabled boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -245,6 +248,9 @@ alter table devices add column if not exists snmp_v3_priv_passphrase text;
 alter table devices add column if not exists snmp_v3_context_name text;
 alter table metric_definitions add column if not exists metric_kind text not null default 'scalar';
 alter table metric_definitions add column if not exists table_oid text;
+alter table metric_definitions add column if not exists aggregate_method text not null default 'latest';
+alter table metric_definitions add column if not exists display_group text;
+alter table metric_definitions add column if not exists vendor text;
 alter table alert_notifications add column if not exists subject text;
 alter table alert_notifications add column if not exists error text;
 alter table alert_notifications add column if not exists retry_count integer not null default 0;
@@ -317,21 +323,27 @@ insert into oid_templates (name, description)
 values ('默认 SNMP 模板', '内置系统指标和接口表指标')
 on conflict (name) do nothing;
 
+insert into oid_templates (name, description)
+values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标')
+on conflict (name) do nothing;
+
 insert into device_groups (name, description, template_id)
 select '默认分组', '默认设备分组', id
 from oid_templates
 where name = '默认 SNMP 模板'
 on conflict (name) do nothing;
 
-insert into metric_definitions (name, oid, unit, metric_kind, table_oid)
+insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor)
 values
-  ('sysUpTime', '.1.3.6.1.2.1.1.3.0', 'ticks', 'scalar', null),
-  ('ifNumber', '.1.3.6.1.2.1.2.1.0', 'count', 'scalar', null),
-  ('cpuUsage', '.1.3.6.1.2.1.25.3.3.1.2.196608', '%', 'scalar', null),
-  ('ifDescr', '.1.3.6.1.2.1.2.2.1.2', '', 'interface', '.1.3.6.1.2.1.2.2.1.2'),
-  ('ifOperStatus', '.1.3.6.1.2.1.2.2.1.8', '', 'interface', '.1.3.6.1.2.1.2.2.1.8'),
-  ('ifInOctets', '.1.3.6.1.2.1.2.2.1.10', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.10'),
-  ('ifOutOctets', '.1.3.6.1.2.1.2.2.1.16', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.16')
+  ('sysUpTime', '.1.3.6.1.2.1.1.3.0', 'ticks', 'scalar', null, 'latest', 'system', 'generic'),
+  ('ifNumber', '.1.3.6.1.2.1.2.1.0', 'count', 'scalar', null, 'latest', 'system', 'generic'),
+  ('cpuUsage', '.1.3.6.1.2.1.25.3.3.1.2.196608', '%', 'scalar', null, 'latest', 'cpu', 'generic'),
+  ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'max', 'cpu', 'huawei'),
+  ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'max', 'memory', 'huawei'),
+  ('ifDescr', '.1.3.6.1.2.1.2.2.1.2', '', 'interface', '.1.3.6.1.2.1.2.2.1.2', 'latest', 'interface', 'generic'),
+  ('ifOperStatus', '.1.3.6.1.2.1.2.2.1.8', '', 'interface', '.1.3.6.1.2.1.2.2.1.8', 'latest', 'interface', 'generic'),
+  ('ifInOctets', '.1.3.6.1.2.1.2.2.1.10', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.10', 'latest', 'interface', 'generic'),
+  ('ifOutOctets', '.1.3.6.1.2.1.2.2.1.16', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.16', 'latest', 'interface', 'generic')
 on conflict (oid) do nothing;
 
 insert into oid_template_definitions (template_id, metric_id, sort_order)
@@ -340,6 +352,8 @@ select t.id, m.id,
     when 'sysUpTime' then 10
     when 'ifNumber' then 20
     when 'cpuUsage' then 30
+    when 'huaweiCpuUsage' then 40
+    when 'huaweiMemoryUsage' then 50
     when 'ifDescr' then 100
     when 'ifOperStatus' then 110
     when 'ifInOctets' then 120
@@ -347,8 +361,26 @@ select t.id, m.id,
     else 999
   end
 from oid_templates t
-join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'cpuUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
+join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'cpuUsage', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
 where t.name = '默认 SNMP 模板'
+on conflict (template_id, metric_id) do nothing;
+
+insert into oid_template_definitions (template_id, metric_id, sort_order)
+select t.id, m.id,
+  case m.name
+    when 'sysUpTime' then 10
+    when 'ifNumber' then 20
+    when 'huaweiCpuUsage' then 30
+    when 'huaweiMemoryUsage' then 40
+    when 'ifDescr' then 100
+    when 'ifOperStatus' then 110
+    when 'ifInOctets' then 120
+    when 'ifOutOctets' then 130
+    else 999
+  end
+from oid_templates t
+join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
+where t.name = '华为 SNMP 模板'
 on conflict (template_id, metric_id) do nothing;
 
 insert into alert_rules (name, rule_type, severity, metric_name, operator, threshold, duration_seconds, enabled)

@@ -25,8 +25,11 @@ export interface MetricDefinition {
   name: string
   oid: string
   unit: string
-  metric_kind: 'scalar' | 'interface'
+  metric_kind: 'scalar' | 'interface' | 'walk'
   table_oid?: string | null
+  aggregate_method?: 'latest' | 'max' | 'avg' | 'sum' | 'first' | string
+  display_group?: string | null
+  vendor?: string | null
   enabled: boolean
   sort_order?: number
 }
@@ -361,6 +364,14 @@ export async function createDevice(payload: CreateDevicePayload): Promise<Device
   })
 }
 
+export async function updateDevice(id: string, payload: Partial<CreateDevicePayload>): Promise<Device> {
+  return request(`/api/devices/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
 export async function deleteDevice(id: string): Promise<Device> {
   return request(`/api/devices/${id}`, {
     method: 'DELETE'
@@ -374,6 +385,14 @@ export async function listDeviceGroups(): Promise<DeviceGroup[]> {
 export async function createDeviceGroup(payload: Pick<DeviceGroup, 'name' | 'description' | 'template_id'>): Promise<DeviceGroup> {
   return request('/api/device-groups', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+}
+
+export async function updateDeviceGroup(id: string, payload: Partial<Pick<DeviceGroup, 'name' | 'description' | 'template_id'>>): Promise<DeviceGroup> {
+  return request(`/api/device-groups/${id}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
@@ -424,6 +443,10 @@ export async function listInterfaceSamples(params: Record<string, string | numbe
 
 export async function getCpuChart(params: Record<string, string | number> = {}): Promise<ChartPoint[]> {
   return request(`/api/charts/cpu${querySuffix(params)}`)
+}
+
+export async function getMemoryChart(params: Record<string, string | number> = {}): Promise<ChartPoint[]> {
+  return request(`/api/charts/memory${querySuffix(params)}`)
 }
 
 export async function getInterfaceTrafficChart(params: Record<string, string | number> = {}): Promise<ChartPoint[]> {

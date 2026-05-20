@@ -1,7 +1,7 @@
 export async function metricRoutes(app) {
   app.get('/definitions', async () => {
     const result = await app.db.query(`
-      select id, name, oid, unit, metric_kind, table_oid, enabled
+      select id, name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled
       from metric_definitions
       order by id
     `)
@@ -9,14 +9,24 @@ export async function metricRoutes(app) {
   })
 
   app.post('/definitions', async (request, reply) => {
-    const { name, oid, unit = null, metric_kind = 'scalar', table_oid = null, enabled = true } = request.body
+    const {
+      name,
+      oid,
+      unit = null,
+      metric_kind = 'scalar',
+      table_oid = null,
+      aggregate_method = 'latest',
+      display_group = null,
+      vendor = null,
+      enabled = true
+    } = request.body
     const result = await app.db.query(
       `
-        insert into metric_definitions (name, oid, unit, metric_kind, table_oid, enabled)
-        values ($1, $2, $3, $4, $5, $6)
-        returning id, name, oid, unit, metric_kind, table_oid, enabled
+        insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        returning id, name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled
       `,
-      [name, oid, unit, metric_kind, table_oid, enabled]
+      [name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled]
     )
     reply.code(201)
     return result.rows[0]
@@ -24,7 +34,7 @@ export async function metricRoutes(app) {
 
   app.patch('/definitions/:id', async (request) => {
     const { id } = request.params
-    const { name, oid, unit, metric_kind, table_oid, enabled } = request.body
+    const { name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled } = request.body
     const result = await app.db.query(
       `
         update metric_definitions
@@ -34,11 +44,14 @@ export async function metricRoutes(app) {
           unit = coalesce($4, unit),
           metric_kind = coalesce($5, metric_kind),
           table_oid = coalesce($6, table_oid),
-          enabled = coalesce($7, enabled)
+          aggregate_method = coalesce($7, aggregate_method),
+          display_group = coalesce($8, display_group),
+          vendor = coalesce($9, vendor),
+          enabled = coalesce($10, enabled)
         where id = $1
-        returning id, name, oid, unit, metric_kind, table_oid, enabled
+        returning id, name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled
       `,
-      [id, name, oid, unit, metric_kind, table_oid, enabled]
+      [id, name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor, enabled]
     )
     return result.rows[0]
   })
@@ -105,6 +118,9 @@ export async function metricRoutes(app) {
           m.unit,
           m.metric_kind,
           m.table_oid,
+          m.aggregate_method,
+          m.display_group,
+          m.vendor,
           m.enabled,
           td.sort_order
         from oid_template_definitions td

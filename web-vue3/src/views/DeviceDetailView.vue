@@ -10,6 +10,7 @@ import {
   getCpuChart,
   getInterfaceStatusChart,
   getInterfaceTrafficChart,
+  getMemoryChart,
   listDevices,
   listInterfaces,
   listMetricSamples,
@@ -33,6 +34,7 @@ const device = ref<Device | null>(null)
 const interfaces = ref<DeviceInterface[]>([])
 const samples = ref<MetricSample[]>([])
 const cpuSeries = ref<ChartPoint[]>([])
+const memorySeries = ref<ChartPoint[]>([])
 const statusSeries = ref<InterfaceStatusPoint[]>([])
 const trendSeries = ref<ChartPoint[]>([])
 const interfaceTraffic = ref<InterfaceTraffic[]>([])
@@ -54,6 +56,22 @@ const cpuChartOptions = computed<EChartsOption>(() => ({
     symbolSize: 6,
     areaStyle: { color: 'rgba(37, 99, 235, 0.16)' },
     data: cpuSeries.value.map((point) => point.value ?? 0)
+  }]
+}))
+
+const memoryChartOptions = computed<EChartsOption>(() => ({
+  color: ['#0f766e'],
+  grid: { left: 42, right: 18, top: 26, bottom: 34 },
+  tooltip: { trigger: 'axis', valueFormatter: (value) => `${Number(value || 0).toFixed(1)}%` },
+  xAxis: { type: 'category', boundaryGap: false, data: memorySeries.value.map((point) => formatTime(point.time)) },
+  yAxis: { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' } },
+  series: [{
+    name: 'Memory',
+    type: 'line',
+    smooth: true,
+    symbolSize: 6,
+    areaStyle: { color: 'rgba(15, 118, 110, 0.16)' },
+    data: memorySeries.value.map((point) => point.value ?? 0)
   }]
 }))
 
@@ -86,11 +104,12 @@ const trendChartOptions = computed<EChartsOption>(() => ({
 async function loadData(): Promise<void> {
   loading.value = true
   try {
-    const [deviceResult, interfaceResult, sampleResult, cpuResult, statusResult, trendResult] = await Promise.all([
+    const [deviceResult, interfaceResult, sampleResult, cpuResult, memoryResult, statusResult, trendResult] = await Promise.all([
       listDevices(),
       listInterfaces({ deviceId: deviceId.value }),
       listMetricSamples({ deviceId: deviceId.value, limit: 8 }),
       getCpuChart({ deviceId: deviceId.value, range: '1h' }),
+      getMemoryChart({ deviceId: deviceId.value, range: '1h' }),
       getInterfaceStatusChart({ deviceId: deviceId.value }),
       getCollectionTrendChart({ deviceId: deviceId.value, range: '1h' })
     ])
@@ -98,6 +117,7 @@ async function loadData(): Promise<void> {
     interfaces.value = interfaceResult
     samples.value = sampleResult
     cpuSeries.value = cpuResult
+    memorySeries.value = memoryResult
     statusSeries.value = statusResult
     trendSeries.value = trendResult
     interfaceTraffic.value = await Promise.all(
@@ -180,6 +200,9 @@ onMounted(loadData)
     <el-row :gutter="16" class="dashboard-row">
       <el-col :span="8">
         <EChartCard title="CPU 使用率" description="当前设备最近 1 小时 CPU 趋势" :options="cpuChartOptions" />
+      </el-col>
+      <el-col :span="8">
+        <EChartCard title="内存使用率" description="当前设备最近 1 小时内存趋势" :options="memoryChartOptions" />
       </el-col>
       <el-col :span="8">
         <EChartCard title="接口状态分布" description="当前设备接口 UP / DOWN / UNKNOWN" :options="statusChartOptions" />

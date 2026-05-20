@@ -13,6 +13,9 @@ export const dbPlugin = fp(async (app) => {
     alter table alert_notifications add column if not exists retry_count integer not null default 0;
     alter table alert_notifications add column if not exists next_retry_at timestamptz not null default now();
     alter table alert_notifications add column if not exists updated_at timestamptz not null default now();
+    alter table metric_definitions add column if not exists aggregate_method text not null default 'latest';
+    alter table metric_definitions add column if not exists display_group text;
+    alter table metric_definitions add column if not exists vendor text;
     create index if not exists idx_alert_notifications_pending
       on alert_notifications(status, next_retry_at);
     create unique index if not exists uq_alert_notifications_event_channel_target_subject
@@ -149,6 +152,47 @@ export const dbPlugin = fp(async (app) => {
     select '默认拓扑', '手动维护的默认网络拓扑', true
     where not exists (select 1 from topology_maps where is_default = true)
     on conflict (name) do nothing;
+    insert into oid_templates (name, description)
+    values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标')
+    on conflict (name) do nothing;
+    insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor)
+    values
+      ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'max', 'cpu', 'huawei'),
+      ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'max', 'memory', 'huawei')
+    on conflict (oid) do update set
+      metric_kind = excluded.metric_kind,
+      table_oid = excluded.table_oid,
+      aggregate_method = excluded.aggregate_method,
+      display_group = excluded.display_group,
+      vendor = excluded.vendor;
+    insert into oid_template_definitions (template_id, metric_id, sort_order)
+    select t.id, m.id,
+      case m.name
+        when 'sysUpTime' then 10
+        when 'ifNumber' then 20
+        when 'huaweiCpuUsage' then 30
+        when 'huaweiMemoryUsage' then 40
+        when 'ifDescr' then 100
+        when 'ifOperStatus' then 110
+        when 'ifInOctets' then 120
+        when 'ifOutOctets' then 130
+        else 999
+      end
+    from oid_templates t
+    join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
+    where t.name = '华为 SNMP 模板'
+    on conflict (template_id, metric_id) do nothing;
+    insert into oid_template_definitions (template_id, metric_id, sort_order)
+    select t.id, m.id,
+      case m.name
+        when 'huaweiCpuUsage' then 40
+        when 'huaweiMemoryUsage' then 50
+        else 999
+      end
+    from oid_templates t
+    join metric_definitions m on m.name in ('huaweiCpuUsage', 'huaweiMemoryUsage')
+    where t.name = '默认 SNMP 模板'
+    on conflict (template_id, metric_id) do nothing;
   `)
 
   app.addHook('onClose', async () => {

@@ -20,12 +20,15 @@ type Device struct {
 }
 
 type MetricDefinition struct {
-	ID         int64
-	Name       string
-	OID        string
-	Unit       string
-	MetricKind string
-	TableOID   string
+	ID              int64
+	Name            string
+	OID             string
+	Unit            string
+	MetricKind      string
+	TableOID        string
+	AggregateMethod string
+	DisplayGroup    string
+	Vendor          string
 }
 
 type MetricSample struct {

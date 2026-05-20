@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { createDevice, deleteDevice, listDeviceGroups, listDevices, type Device, type DeviceGroup } from '../services/api'
+import { createDevice, deleteDevice, listDeviceGroups, listDevices, updateDevice, type Device, type DeviceGroup } from '../services/api'
 
 const loading = ref(false)
 const deletingId = ref('')
+const updatingGroupId = ref('')
 const keyword = ref('')
 const devices = ref<Device[]>([])
 const groups = ref<DeviceGroup[]>([])
@@ -117,6 +118,36 @@ function onlineStatusText(status?: Device['online_status']): string {
   return status === 'online' ? '在线' : '离线'
 }
 
+async function changeDeviceGroup(device: Device, groupId: string | null): Promise<void> {
+  const targetGroupName = groupId ? groups.value.find((group) => group.id === groupId)?.name || '所选分组' : '未分组'
+  try {
+    await ElMessageBox.confirm(
+      `确认将设备「${device.name}」的分组修改为「${targetGroupName}」吗？修改后会按新分组绑定的模板进行采集。`,
+      '修改设备分组',
+      {
+        confirmButtonText: '确认修改',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    await loadData()
+    return
+  }
+
+  updatingGroupId.value = device.id
+  try {
+    await updateDevice(device.id, { group_id: groupId || null })
+    ElMessage.success('设备分组已更新')
+    await loadData()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '更新设备分组失败')
+    await loadData()
+  } finally {
+    updatingGroupId.value = ''
+  }
+}
+
 async function removeDevice(device: Device): Promise<void> {
   await ElMessageBox.confirm(
     `确认删除设备「${device.name}」吗？删除后该设备的采集样本、接口清单和告警事件也会一并删除。`,
@@ -145,7 +176,7 @@ onMounted(loadData)
 </script>
 
 <template>
-  <el-card class="page-card" shadow="never">
+  <div v-loading="loading">
     <div class="page-toolbar">
       <h2 class="page-title">设备管理</h2>
       <div class="toolbar-actions">
@@ -154,106 +185,124 @@ onMounted(loadData)
       </div>
     </div>
 
-    <el-form class="device-form" :model="form" label-width="96px" @submit.prevent="submit">
-      <div class="form-grid">
-        <el-form-item label="名称">
-          <el-input v-model="form.name" placeholder="例如 Core Switch" />
-        </el-form-item>
-        <el-form-item label="地址">
-          <el-input v-model="form.host" placeholder="192.0.2.20" />
-        </el-form-item>
-        <el-form-item label="端口">
-          <el-input-number v-model="form.port" :min="1" :max="65535" />
-        </el-form-item>
-        <el-form-item label="分组">
-          <el-select v-model="form.group_id" placeholder="选择设备分组" clearable>
-            <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="SNMP 版本">
-          <el-select v-model="form.snmp_version">
-            <el-option label="SNMP v2c" value="2c" />
-            <el-option label="SNMP v3" value="3" />
-          </el-select>
-        </el-form-item>
-        <el-form-item v-if="form.snmp_version === '2c'" label="Community">
-          <el-input v-model="form.community" />
-        </el-form-item>
-        <template v-else>
-          <el-form-item label="用户名">
-            <el-input v-model="form.snmp_v3_username" placeholder="SNMP v3 UserName" />
+    <el-card class="page-card" shadow="never">
+      <template #header>添加设备</template>
+      <el-form class="device-form" :model="form" label-width="96px" @submit.prevent="submit">
+        <div class="form-grid">
+          <el-form-item label="名称">
+            <el-input v-model="form.name" placeholder="例如 Core Switch" />
           </el-form-item>
-          <el-form-item label="安全级别">
-            <el-select v-model="form.snmp_v3_security_level">
-              <el-option label="noAuthNoPriv" value="noAuthNoPriv" />
-              <el-option label="authNoPriv" value="authNoPriv" />
-              <el-option label="authPriv" value="authPriv" />
+          <el-form-item label="地址">
+            <el-input v-model="form.host" placeholder="192.0.2.20" />
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="form.port" :min="1" :max="65535" />
+          </el-form-item>
+          <el-form-item label="分组">
+            <el-select v-model="form.group_id" placeholder="选择设备分组" clearable>
+              <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="needsAuth" label="认证算法">
-            <el-select v-model="form.snmp_v3_auth_protocol">
-              <el-option v-for="item in ['MD5', 'SHA', 'SHA224', 'SHA256', 'SHA384', 'SHA512']" :key="item" :label="item" :value="item" />
+          <el-form-item label="SNMP 版本">
+            <el-select v-model="form.snmp_version">
+              <el-option label="SNMP v2c" value="2c" />
+              <el-option label="SNMP v3" value="3" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="needsAuth" label="认证密码">
-            <el-input v-model="form.snmp_v3_auth_passphrase" type="password" show-password />
+          <el-form-item v-if="form.snmp_version === '2c'" label="Community">
+            <el-input v-model="form.community" />
           </el-form-item>
-          <el-form-item v-if="needsPrivacy" label="加密算法">
-            <el-select v-model="form.snmp_v3_priv_protocol">
-              <el-option v-for="item in ['DES', 'AES', 'AES192', 'AES256', 'AES192C', 'AES256C']" :key="item" :label="item" :value="item" />
-            </el-select>
+          <template v-else>
+            <el-form-item label="用户名">
+              <el-input v-model="form.snmp_v3_username" placeholder="SNMP v3 UserName" />
+            </el-form-item>
+            <el-form-item label="安全级别">
+              <el-select v-model="form.snmp_v3_security_level">
+                <el-option label="noAuthNoPriv" value="noAuthNoPriv" />
+                <el-option label="authNoPriv" value="authNoPriv" />
+                <el-option label="authPriv" value="authPriv" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="needsAuth" label="认证算法">
+              <el-select v-model="form.snmp_v3_auth_protocol">
+                <el-option v-for="item in ['MD5', 'SHA', 'SHA224', 'SHA256', 'SHA384', 'SHA512']" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="needsAuth" label="认证密码">
+              <el-input v-model="form.snmp_v3_auth_passphrase" type="password" show-password />
+            </el-form-item>
+            <el-form-item v-if="needsPrivacy" label="加密算法">
+              <el-select v-model="form.snmp_v3_priv_protocol">
+                <el-option v-for="item in ['DES', 'AES', 'AES192', 'AES256', 'AES192C', 'AES256C']" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="needsPrivacy" label="加密密码">
+              <el-input v-model="form.snmp_v3_priv_passphrase" type="password" show-password />
+            </el-form-item>
+            <el-form-item label="Context">
+              <el-input v-model="form.snmp_v3_context_name" placeholder="可选" />
+            </el-form-item>
+          </template>
+          <el-form-item label="启用">
+            <el-switch v-model="form.enabled" />
           </el-form-item>
-          <el-form-item v-if="needsPrivacy" label="加密密码">
-            <el-input v-model="form.snmp_v3_priv_passphrase" type="password" show-password />
+          <el-form-item>
+            <el-button type="success" native-type="submit">添加设备</el-button>
           </el-form-item>
-          <el-form-item label="Context">
-            <el-input v-model="form.snmp_v3_context_name" placeholder="可选" />
-          </el-form-item>
-        </template>
-        <el-form-item label="启用">
-          <el-switch v-model="form.enabled" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="success" native-type="submit">添加设备</el-button>
-        </el-form-item>
-      </div>
-    </el-form>
+        </div>
+      </el-form>
+    </el-card>
 
-    <el-table v-loading="loading" :data="filteredDevices" row-key="id" empty-text="暂无设备">
-      <el-table-column prop="id" label="ID" width="90" />
-      <el-table-column label="名称" min-width="180" show-overflow-tooltip>
-        <template #default="{ row }">
-          <RouterLink class="device-name-link" :to="`/devices/${row.id}`">{{ row.name }}</RouterLink>
-        </template>
-      </el-table-column>
-      <el-table-column prop="host" label="地址" min-width="160" />
-      <el-table-column prop="group_name" label="分组" min-width="140">
-        <template #default="{ row }">{{ row.group_name || '未分组' }}</template>
-      </el-table-column>
-      <el-table-column label="采集状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="在线状态" width="120">
-        <template #default="{ row }">
-          <el-tag :type="onlineStatusType(row.online_status)">{{ onlineStatusText(row.online_status) }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="snmp_version" label="SNMP" width="110">
-        <template #default="{ row }">
-          <el-tag :type="row.snmp_version === '3' ? 'warning' : 'info'">v{{ row.snmp_version || '2c' }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column prop="port" label="端口" width="100" />
-      <el-table-column prop="created_at" label="创建时间" width="220" />
-      <el-table-column label="操作" width="120" fixed="right">
-        <template #default="{ row }">
-          <el-button type="danger" link :loading="deletingId === row.id" @click="removeDevice(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
-  </el-card>
+    <el-card class="page-card dashboard-row" shadow="never">
+      <template #header>设备列表</template>
+      <el-table :data="filteredDevices" row-key="id" empty-text="暂无设备">
+        <el-table-column prop="id" label="ID" width="90" />
+        <el-table-column label="名称" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">
+            <RouterLink class="device-name-link" :to="`/devices/${row.id}`">{{ row.name }}</RouterLink>
+          </template>
+        </el-table-column>
+        <el-table-column prop="host" label="地址" min-width="160" />
+        <el-table-column label="采集状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="在线状态" width="120">
+          <template #default="{ row }">
+            <el-tag :type="onlineStatusType(row.online_status)">{{ onlineStatusText(row.online_status) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="snmp_version" label="SNMP" width="110">
+          <template #default="{ row }">
+            <el-tag :type="row.snmp_version === '3' ? 'warning' : 'info'">v{{ row.snmp_version || '2c' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="port" label="端口" width="100" />
+        <el-table-column prop="group_name" label="分组" min-width="180">
+          <template #default="{ row }">
+            <el-select
+              :model-value="row.group_id || ''"
+              placeholder="未分组"
+              clearable
+              filterable
+              size="small"
+              :loading="updatingGroupId === row.id"
+              @change="(value: string) => changeDeviceGroup(row, value || null)"
+            >
+              <el-option v-for="group in groups" :key="group.id" :label="group.name" :value="group.id" />
+            </el-select>
+          </template>
+        </el-table-column>
+        <el-table-column prop="created_at" label="创建时间" width="220" />
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button type="danger" size="small" :loading="deletingId === row.id" @click="removeDevice(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-card>
+  </div>
 </template>
 
 <style scoped>
@@ -265,7 +314,6 @@ onMounted(loadData)
 }
 
 .device-form {
-  margin-bottom: 18px;
   padding: 18px 18px 2px;
   border: 1px solid #edf0f7;
   border-radius: 16px;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   addTemplateDefinition,
   createDeviceGroup,
@@ -11,6 +11,7 @@ import {
   listMetricDefinitions,
   listOidTemplates,
   listTemplateDefinitions,
+  updateDeviceGroup,
   type DeviceGroup,
   type DeviceInterface,
   type InterfaceMetricSample,
@@ -19,6 +20,7 @@ import {
 } from '../services/api'
 
 const loading = ref(false)
+const updatingGroupId = ref('')
 const templates = ref<OidTemplate[]>([])
 const groups = ref<DeviceGroup[]>([])
 const definitions = ref<MetricDefinition[]>([])
@@ -63,7 +65,7 @@ async function loadData(): Promise<void> {
     if (!activeTemplateId.value) {
       activeTemplateId.value = defaultTemplateId(templateResult)
     }
-    if (!groupForm.template_id) {
+    if (!groupForm.template_id || !templateResult.some((template) => template.id === groupForm.template_id)) {
       groupForm.template_id = defaultTemplateId(templateResult)
     }
     await loadTemplateDefinitions()
@@ -105,6 +107,36 @@ async function submitGroup(): Promise<void> {
   groupForm.description = ''
   groupForm.template_id = defaultTemplateId(templates.value)
   await loadData()
+}
+
+async function changeGroupTemplate(group: DeviceGroup, templateId: string | null): Promise<void> {
+  const targetTemplateName = templateId ? templates.value.find((template) => template.id === templateId)?.name || '所选模板' : '未绑定'
+  try {
+    await ElMessageBox.confirm(
+      `确认将分组「${group.name}」的绑定模板修改为「${targetTemplateName}」吗？该分组下设备后续会按新模板采集。`,
+      '修改绑定模板',
+      {
+        confirmButtonText: '确认修改',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    groups.value = await listDeviceGroups()
+    return
+  }
+
+  updatingGroupId.value = group.id
+  try {
+    await updateDeviceGroup(group.id, { template_id: templateId || null })
+    ElMessage.success('分组模板已更新')
+    groups.value = await listDeviceGroups()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '更新分组模板失败')
+    groups.value = await listDeviceGroups()
+  } finally {
+    updatingGroupId.value = ''
+  }
 }
 
 async function attachDefinition(): Promise<void> {
@@ -173,8 +205,8 @@ onMounted(loadData)
             <el-form-item label="名称">
               <el-input v-model="groupForm.name" placeholder="例如 核心网络" />
             </el-form-item>
-            <el-form-item label="模板">
-              <el-select v-model="groupForm.template_id" placeholder="选择模板" clearable>
+            <el-form-item label="绑定模板">
+              <el-select v-model="groupForm.template_id" class="form-template-select" placeholder="选择绑定模板" clearable>
                 <el-option v-for="template in templates" :key="template.id" :label="template.name" :value="template.id" />
               </el-select>
             </el-form-item>
@@ -185,8 +217,20 @@ onMounted(loadData)
 
           <el-table :data="groups" row-key="id" height="260">
             <el-table-column prop="name" label="分组名称" min-width="160" />
-            <el-table-column prop="template_name" label="绑定模板" min-width="180">
-              <template #default="{ row }">{{ row.template_name || '未绑定' }}</template>
+            <el-table-column prop="template_name" label="绑定模板" min-width="220">
+              <template #default="{ row }">
+                <el-select
+                  :model-value="row.template_id || ''"
+                  placeholder="未绑定"
+                  clearable
+                  filterable
+                  size="small"
+                  :loading="updatingGroupId === row.id"
+                  @change="(value: string) => changeGroupTemplate(row, value || null)"
+                >
+                  <el-option v-for="template in templates" :key="template.id" :label="template.name" :value="template.id" />
+                </el-select>
+              </template>
             </el-table-column>
             <el-table-column prop="device_count" label="设备数" width="90" />
           </el-table>
@@ -201,7 +245,12 @@ onMounted(loadData)
           <el-option v-for="template in templates" :key="template.id" :label="template.name" :value="template.id" />
         </el-select>
         <el-select v-model="attachForm.metric_id" placeholder="选择指标加入模板" filterable>
-          <el-option v-for="definition in definitions" :key="definition.id" :label="`${definition.name} (${definition.metric_kind})`" :value="definition.id" />
+          <el-option
+            v-for="definition in definitions"
+            :key="definition.id"
+            :label="`${definition.name} (${definition.metric_kind}${definition.aggregate_method ? `/${definition.aggregate_method}` : ''})`"
+            :value="definition.id"
+          />
         </el-select>
         <el-button type="primary" @click="attachDefinition">加入模板</el-button>
       </div>
@@ -209,6 +258,9 @@ onMounted(loadData)
         <el-table-column prop="name" label="指标名称" min-width="180" />
         <el-table-column prop="oid" label="OID" min-width="260" show-overflow-tooltip />
         <el-table-column prop="metric_kind" label="类型" width="120" />
+        <el-table-column prop="aggregate_method" label="聚合" width="100" />
+        <el-table-column prop="display_group" label="分组" width="100" />
+        <el-table-column prop="vendor" label="厂商" width="100" />
         <el-table-column prop="unit" label="单位" width="100" />
       </el-table>
     </el-card>
@@ -246,3 +298,9 @@ onMounted(loadData)
     </el-row>
   </div>
 </template>
+
+<style scoped>
+.form-template-select {
+  width: 190px;
+}
+</style>

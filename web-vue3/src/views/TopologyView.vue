@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef } from 'vue'
 import { Graph, type Cell, type Edge } from '@antv/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { FullScreen } from '@element-plus/icons-vue'
 import {
   createTopologyLink,
   createTopologyNode,
@@ -26,6 +27,7 @@ const topology = ref<TopologyData | null>(null)
 const devices = ref<Device[]>([])
 const unmatchedNeighbors = ref<DeviceNeighbor[]>([])
 const selectedCell = shallowRef<Cell | null>(null)
+const isTopologyMaximized = ref(false)
 let graph: Graph | null = null
 
 const addDeviceForm = reactive({
@@ -430,6 +432,19 @@ function fitView(): void {
   graph?.zoomToFit({ padding: 40, maxScale: 1 })
 }
 
+async function toggleTopologyMaximized(): Promise<void> {
+  isTopologyMaximized.value = !isTopologyMaximized.value
+  await nextTick()
+  graph?.resize()
+  fitView()
+}
+
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && isTopologyMaximized.value) {
+    void toggleTopologyMaximized()
+  }
+}
+
 function getBackendId(cell: Cell): string {
   const dataId = cell.getData()?.backendId
   if (dataId) return String(dataId)
@@ -440,17 +455,19 @@ onMounted(async () => {
   await nextTick()
   initGraph()
   await loadData()
+  window.addEventListener('keydown', handleKeydown)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
   graph?.dispose()
   graph = null
 })
 </script>
 
 <template>
-  <div v-loading="loading">
-    <div class="page-toolbar">
+  <div v-loading="loading" class="topology-page" :class="{ 'is-focus-mode': isTopologyMaximized }">
+    <div v-if="!isTopologyMaximized" class="page-toolbar">
       <div>
         <h2 class="page-title">网络拓扑</h2>
         <p class="page-subtitle">从 LLDP/CDP 邻居自动生成节点和链路，也支持手工补充布局</p>
@@ -465,7 +482,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="topology-layout">
-      <el-card class="page-card topology-panel" shadow="never">
+      <el-card v-if="!isTopologyMaximized" class="page-card topology-panel" shadow="never">
         <template #header>拓扑元素</template>
 
         <div class="topology-section">
@@ -549,7 +566,14 @@ onBeforeUnmount(() => {
         <template #header>
           <div class="card-header-row">
             <span>{{ topology?.map.name || '默认拓扑' }}</span>
-            <span>{{ nodeOptions.length }} 个节点 / {{ linkCount }} 条链路</span>
+            <div class="topology-canvas-actions">
+              <el-button v-if="isTopologyMaximized" @click="fitView">适配视图</el-button>
+              <el-button v-if="isTopologyMaximized" type="primary" :loading="saving" @click="saveLayout">保存布局</el-button>
+              <el-button :icon="FullScreen" @click="toggleTopologyMaximized">
+                {{ isTopologyMaximized ? '退出最大化' : '最大化' }}
+              </el-button>
+              <span>{{ nodeOptions.length }} 个节点 / {{ linkCount }} 条链路</span>
+            </div>
           </div>
         </template>
         <div ref="graphContainer" class="topology-canvas"></div>
@@ -571,6 +595,12 @@ onBeforeUnmount(() => {
   grid-template-columns: 320px minmax(0, 1fr);
   gap: 16px;
   min-height: calc(100vh - 150px);
+}
+
+.topology-page.is-focus-mode .topology-layout {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  min-height: calc(100vh - 104px);
 }
 
 .topology-panel :deep(.el-card__body) {
@@ -640,11 +670,39 @@ onBeforeUnmount(() => {
   padding: 0;
 }
 
+.topology-canvas-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #0f172a;
+  font-weight: 600;
+}
+
 .topology-canvas {
   width: 100%;
   height: calc(100vh - 218px);
   min-height: 620px;
   overflow: hidden;
+}
+
+.topology-page.is-focus-mode .topology-canvas-card {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 104px);
+}
+
+.topology-page.is-focus-mode .topology-canvas-card :deep(.el-card__header) {
+  flex: 0 0 auto;
+}
+
+.topology-page.is-focus-mode .topology-canvas-card :deep(.el-card__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.topology-page.is-focus-mode .topology-canvas {
+  height: calc(100vh - 170px);
+  min-height: 0;
 }
 
 @media (max-width: 1080px) {

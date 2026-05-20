@@ -178,6 +178,9 @@ func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		alter table alert_notifications add column if not exists retry_count integer not null default 0;
 		alter table alert_notifications add column if not exists next_retry_at timestamptz not null default now();
 		alter table alert_notifications add column if not exists updated_at timestamptz not null default now();
+		alter table metric_definitions add column if not exists aggregate_method text not null default 'latest';
+		alter table metric_definitions add column if not exists display_group text;
+		alter table metric_definitions add column if not exists vendor text;
 		create table if not exists device_neighbors (
 			id bigserial primary key,
 			device_id bigint not null references devices(id) on delete cascade,
@@ -258,6 +261,47 @@ func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		create index if not exists idx_device_neighbors_last_seen on device_neighbors(last_seen_at desc);
 		create index if not exists idx_topology_links_neighbor_id on topology_links(neighbor_id);
 		create unique index if not exists uq_topology_links_neighbor_id on topology_links(neighbor_id);
+		insert into oid_templates (name, description)
+		values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标')
+		on conflict (name) do nothing;
+		insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor)
+		values
+		  ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'max', 'cpu', 'huawei'),
+		  ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'max', 'memory', 'huawei')
+		on conflict (oid) do update set
+		  metric_kind = excluded.metric_kind,
+		  table_oid = excluded.table_oid,
+		  aggregate_method = excluded.aggregate_method,
+		  display_group = excluded.display_group,
+		  vendor = excluded.vendor;
+		insert into oid_template_definitions (template_id, metric_id, sort_order)
+		select t.id, m.id,
+		  case m.name
+		    when 'sysUpTime' then 10
+		    when 'ifNumber' then 20
+		    when 'huaweiCpuUsage' then 30
+		    when 'huaweiMemoryUsage' then 40
+		    when 'ifDescr' then 100
+		    when 'ifOperStatus' then 110
+		    when 'ifInOctets' then 120
+		    when 'ifOutOctets' then 130
+		    else 999
+		  end
+		from oid_templates t
+		join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
+		where t.name = '华为 SNMP 模板'
+		on conflict (template_id, metric_id) do nothing;
+		insert into oid_template_definitions (template_id, metric_id, sort_order)
+		select t.id, m.id,
+		  case m.name
+		    when 'huaweiCpuUsage' then 40
+		    when 'huaweiMemoryUsage' then 50
+		    else 999
+		  end
+		from oid_templates t
+		join metric_definitions m on m.name in ('huaweiCpuUsage', 'huaweiMemoryUsage')
+		where t.name = '默认 SNMP 模板'
+		on conflict (template_id, metric_id) do nothing;
 	`)
 	return err
 }
@@ -321,7 +365,7 @@ func (store *PostgresStore) ListMetrics(ctx context.Context, templateID int64) (
 	}
 
 	rows, err := store.pool.Query(ctx, `
-		select id, name, oid, coalesce(unit, ''), metric_kind, coalesce(table_oid, '')
+		select id, name, oid, coalesce(unit, ''), metric_kind, coalesce(table_oid, ''), coalesce(aggregate_method, 'latest'), coalesce(display_group, ''), coalesce(vendor, '')
 		from metric_definitions
 		where enabled = true
 		order by id
@@ -334,7 +378,7 @@ func (store *PostgresStore) ListMetrics(ctx context.Context, templateID int64) (
 	var metrics []collector.MetricDefinition
 	for rows.Next() {
 		var metric collector.MetricDefinition
-		if err := rows.Scan(&metric.ID, &metric.Name, &metric.OID, &metric.Unit, &metric.MetricKind, &metric.TableOID); err != nil {
+		if err := rows.Scan(&metric.ID, &metric.Name, &metric.OID, &metric.Unit, &metric.MetricKind, &metric.TableOID, &metric.AggregateMethod, &metric.DisplayGroup, &metric.Vendor); err != nil {
 			return nil, err
 		}
 		metrics = append(metrics, metric)
@@ -344,7 +388,7 @@ func (store *PostgresStore) ListMetrics(ctx context.Context, templateID int64) (
 
 func (store *PostgresStore) listTemplateMetrics(ctx context.Context, templateID int64) ([]collector.MetricDefinition, error) {
 	rows, err := store.pool.Query(ctx, `
-		select m.id, m.name, m.oid, coalesce(m.unit, ''), m.metric_kind, coalesce(m.table_oid, '')
+		select m.id, m.name, m.oid, coalesce(m.unit, ''), m.metric_kind, coalesce(m.table_oid, ''), coalesce(m.aggregate_method, 'latest'), coalesce(m.display_group, ''), coalesce(m.vendor, '')
 		from oid_template_definitions td
 		join metric_definitions m on m.id = td.metric_id
 		join oid_templates t on t.id = td.template_id
@@ -359,7 +403,7 @@ func (store *PostgresStore) listTemplateMetrics(ctx context.Context, templateID 
 	var metrics []collector.MetricDefinition
 	for rows.Next() {
 		var metric collector.MetricDefinition
-		if err := rows.Scan(&metric.ID, &metric.Name, &metric.OID, &metric.Unit, &metric.MetricKind, &metric.TableOID); err != nil {
+		if err := rows.Scan(&metric.ID, &metric.Name, &metric.OID, &metric.Unit, &metric.MetricKind, &metric.TableOID, &metric.AggregateMethod, &metric.DisplayGroup, &metric.Vendor); err != nil {
 			return nil, err
 		}
 		metrics = append(metrics, metric)

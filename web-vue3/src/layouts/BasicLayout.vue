@@ -24,7 +24,6 @@ const sidebarCollapsed = ref(false)
 const passwordDialogVisible = ref(false)
 const passwordSaving = ref(false)
 const activeMenu = computed(() => route.path)
-const pageTitle = computed(() => String(route.meta.title || 'netlooker'))
 const asideWidth = computed(() => (sidebarCollapsed.value ? '76px' : '232px'))
 
 const passwordForm = reactive({
@@ -134,13 +133,6 @@ function changePassword(): void {
     </el-aside>
 
     <el-container>
-      <el-header class="app-header">
-        <div>
-          <h1 class="app-header__title">{{ pageTitle }}</h1>
-          <p class="app-header__desc">高性能 SNMP 采集引擎管理控制台</p>
-        </div>
-      </el-header>
-
       <el-main class="app-main">
         <RouterView />
       </el-main>

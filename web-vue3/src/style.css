@@ -104,26 +104,6 @@ body {
   background: rgb(37 99 235 / 22%);
 }
 
-.app-header {
-  display: flex;
-  align-items: center;
-  height: 72px;
-  padding: 0 28px;
-  background: #fff;
-  box-shadow: 0 1px 0 rgb(15 23 42 / 6%);
-}
-
-.app-header__title {
-  margin: 0;
-  font-size: 20px;
-}
-
-.app-header__desc {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 13px;
-}
-
 .app-main {
   padding: 24px;
   background: #f3f6fb;
