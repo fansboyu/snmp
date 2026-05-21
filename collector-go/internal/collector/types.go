@@ -24,11 +24,18 @@ type MetricDefinition struct {
 	Name            string
 	OID             string
 	Unit            string
+	DisplayName     string
+	Description     string
 	MetricKind      string
 	TableOID        string
+	ValueType       string
+	Scale           float64
+	Precision       int
 	AggregateMethod string
 	DisplayGroup    string
 	Vendor          string
+	Chartable       bool
+	Alertable       bool
 }
 
 type MetricSample struct {

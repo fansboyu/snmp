@@ -2,6 +2,8 @@
   id bigserial primary key,
   name text not null unique,
   description text,
+  vendor text,
+  device_type text,
   enabled boolean not null default true,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -41,11 +43,18 @@ create table if not exists metric_definitions (
   name text not null,
   oid text not null unique,
   unit text,
+  display_name text,
+  description text,
   metric_kind text not null default 'scalar',
   table_oid text,
+  value_type text not null default 'gauge',
+  scale numeric not null default 1,
+  precision integer not null default 2,
   aggregate_method text not null default 'latest',
   display_group text,
   vendor text,
+  chartable boolean not null default true,
+  alertable boolean not null default false,
   enabled boolean not null default true,
   created_at timestamptz not null default now()
 );
@@ -54,6 +63,8 @@ create table if not exists oid_template_definitions (
   template_id bigint not null references oid_templates(id) on delete cascade,
   metric_id bigint not null references metric_definitions(id) on delete cascade,
   sort_order integer not null default 0,
+  enabled boolean not null default true,
+  required boolean not null default false,
   created_at timestamptz not null default now(),
   primary key (template_id, metric_id)
 );
@@ -251,6 +262,17 @@ alter table metric_definitions add column if not exists table_oid text;
 alter table metric_definitions add column if not exists aggregate_method text not null default 'latest';
 alter table metric_definitions add column if not exists display_group text;
 alter table metric_definitions add column if not exists vendor text;
+alter table oid_templates add column if not exists vendor text;
+alter table oid_templates add column if not exists device_type text;
+alter table metric_definitions add column if not exists display_name text;
+alter table metric_definitions add column if not exists description text;
+alter table metric_definitions add column if not exists value_type text not null default 'gauge';
+alter table metric_definitions add column if not exists scale numeric not null default 1;
+alter table metric_definitions add column if not exists precision integer not null default 2;
+alter table metric_definitions add column if not exists chartable boolean not null default true;
+alter table metric_definitions add column if not exists alertable boolean not null default false;
+alter table oid_template_definitions add column if not exists enabled boolean not null default true;
+alter table oid_template_definitions add column if not exists required boolean not null default false;
 alter table alert_notifications add column if not exists subject text;
 alter table alert_notifications add column if not exists error text;
 alter table alert_notifications add column if not exists retry_count integer not null default 0;
@@ -319,13 +341,17 @@ create index if not exists idx_topology_links_neighbor_id
 create unique index if not exists uq_topology_links_neighbor_id
   on topology_links(neighbor_id);
 
-insert into oid_templates (name, description)
-values ('默认 SNMP 模板', '内置系统指标和接口表指标')
-on conflict (name) do nothing;
+insert into oid_templates (name, description, vendor, device_type)
+values ('默认 SNMP 模板', '内置系统指标和接口表指标', 'generic', 'switch')
+on conflict (name) do update set
+  vendor = coalesce(oid_templates.vendor, excluded.vendor),
+  device_type = coalesce(oid_templates.device_type, excluded.device_type);
 
-insert into oid_templates (name, description)
-values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标')
-on conflict (name) do nothing;
+insert into oid_templates (name, description, vendor, device_type)
+values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标', 'huawei', 'switch')
+on conflict (name) do update set
+  vendor = coalesce(oid_templates.vendor, excluded.vendor),
+  device_type = coalesce(oid_templates.device_type, excluded.device_type);
 
 insert into device_groups (name, description, template_id)
 select '默认分组', '默认设备分组', id
@@ -333,18 +359,33 @@ from oid_templates
 where name = '默认 SNMP 模板'
 on conflict (name) do nothing;
 
-insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor)
+insert into metric_definitions (
+  name, oid, unit, display_name, description, metric_kind, table_oid, value_type, scale, precision,
+  aggregate_method, display_group, vendor, chartable, alertable
+)
 values
-  ('sysUpTime', '.1.3.6.1.2.1.1.3.0', 'ticks', 'scalar', null, 'latest', 'system', 'generic'),
-  ('ifNumber', '.1.3.6.1.2.1.2.1.0', 'count', 'scalar', null, 'latest', 'system', 'generic'),
-  ('cpuUsage', '.1.3.6.1.2.1.25.3.3.1.2.196608', '%', 'scalar', null, 'latest', 'cpu', 'generic'),
-  ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'max', 'cpu', 'huawei'),
-  ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'max', 'memory', 'huawei'),
-  ('ifDescr', '.1.3.6.1.2.1.2.2.1.2', '', 'interface', '.1.3.6.1.2.1.2.2.1.2', 'latest', 'interface', 'generic'),
-  ('ifOperStatus', '.1.3.6.1.2.1.2.2.1.8', '', 'interface', '.1.3.6.1.2.1.2.2.1.8', 'latest', 'interface', 'generic'),
-  ('ifInOctets', '.1.3.6.1.2.1.2.2.1.10', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.10', 'latest', 'interface', 'generic'),
-  ('ifOutOctets', '.1.3.6.1.2.1.2.2.1.16', 'bytes', 'interface', '.1.3.6.1.2.1.2.2.1.16', 'latest', 'interface', 'generic')
-on conflict (oid) do nothing;
+  ('sysUpTime', '.1.3.6.1.2.1.1.3.0', 'ticks', '系统运行时间', 'SNMP sysUpTime 系统运行时间', 'scalar', null, 'timeticks', 1, 0, 'latest', 'system', 'generic', false, false),
+  ('ifNumber', '.1.3.6.1.2.1.2.1.0', 'count', '接口数量', 'SNMP ifNumber 接口数量', 'scalar', null, 'gauge', 1, 0, 'latest', 'system', 'generic', false, false),
+  ('cpuUsage', '.1.3.6.1.2.1.25.3.3.1.2.196608', '%', 'CPU 使用率', 'HOST-RESOURCES-MIB CPU 使用率', 'scalar', null, 'gauge', 1, 0, 'latest', 'cpu', 'generic', true, true),
+  ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', '华为 CPU 使用率', '华为交换机 CPU 使用率 Walk 指标', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'gauge', 1, 0, 'max', 'cpu', 'huawei', true, true),
+  ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', '华为内存使用率', '华为交换机内存使用率 Walk 指标', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'gauge', 1, 0, 'max', 'memory', 'huawei', true, true),
+  ('ifDescr', '.1.3.6.1.2.1.2.2.1.2', '', '接口描述', 'SNMP ifDescr 接口描述', 'interface', '.1.3.6.1.2.1.2.2.1.2', 'string', 1, 0, 'latest', 'interface', 'generic', false, false),
+  ('ifOperStatus', '.1.3.6.1.2.1.2.2.1.8', '', '接口运行状态', 'SNMP ifOperStatus 接口运行状态', 'interface', '.1.3.6.1.2.1.2.2.1.8', 'status', 1, 0, 'latest', 'interface', 'generic', true, true),
+  ('ifInOctets', '.1.3.6.1.2.1.2.2.1.10', 'bytes', '接口入方向字节数', 'SNMP ifInOctets 接口入方向累计字节数', 'interface', '.1.3.6.1.2.1.2.2.1.10', 'counter', 1, 0, 'latest', 'interface', 'generic', true, false),
+  ('ifOutOctets', '.1.3.6.1.2.1.2.2.1.16', 'bytes', '接口出方向字节数', 'SNMP ifOutOctets 接口出方向累计字节数', 'interface', '.1.3.6.1.2.1.2.2.1.16', 'counter', 1, 0, 'latest', 'interface', 'generic', true, false)
+on conflict (oid) do update set
+  display_name = excluded.display_name,
+  description = excluded.description,
+  metric_kind = excluded.metric_kind,
+  table_oid = excluded.table_oid,
+  value_type = excluded.value_type,
+  scale = excluded.scale,
+  precision = excluded.precision,
+  aggregate_method = excluded.aggregate_method,
+  display_group = excluded.display_group,
+  vendor = excluded.vendor,
+  chartable = excluded.chartable,
+  alertable = excluded.alertable;
 
 insert into oid_template_definitions (template_id, metric_id, sort_order)
 select t.id, m.id,
@@ -382,6 +423,12 @@ from oid_templates t
 join metric_definitions m on m.name in ('sysUpTime', 'ifNumber', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets')
 where t.name = '华为 SNMP 模板'
 on conflict (template_id, metric_id) do nothing;
+
+update oid_template_definitions td
+set required = true
+from metric_definitions m
+where m.id = td.metric_id
+  and m.name in ('cpuUsage', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifOperStatus');
 
 insert into alert_rules (name, rule_type, severity, metric_name, operator, threshold, duration_seconds, enabled)
 values

@@ -12,6 +12,7 @@ import {
   listOidTemplates,
   listTemplateDefinitions,
   updateDeviceGroup,
+  updateTemplateDefinition,
   type DeviceGroup,
   type DeviceInterface,
   type InterfaceMetricSample,
@@ -21,6 +22,7 @@ import {
 
 const loading = ref(false)
 const updatingGroupId = ref('')
+const updatingBindingKey = ref('')
 const templates = ref<OidTemplate[]>([])
 const groups = ref<DeviceGroup[]>([])
 const definitions = ref<MetricDefinition[]>([])
@@ -32,6 +34,8 @@ const activeTemplateId = ref('')
 const templateForm = reactive({
   name: '',
   description: '',
+  vendor: '',
+  device_type: 'switch',
   enabled: true
 })
 
@@ -93,6 +97,8 @@ async function submitTemplate(): Promise<void> {
   ElMessage.success('OID 模板已创建')
   templateForm.name = ''
   templateForm.description = ''
+  templateForm.vendor = ''
+  templateForm.device_type = 'switch'
   await loadData()
 }
 
@@ -151,6 +157,23 @@ async function attachDefinition(): Promise<void> {
   templates.value = await listOidTemplates()
 }
 
+async function changeTemplateDefinitionFlag(definition: MetricDefinition, bindingEnabled: boolean): Promise<void> {
+  if (!activeTemplateId.value) {
+    return
+  }
+  updatingBindingKey.value = `${activeTemplateId.value}:${definition.id}`
+  try {
+    await updateTemplateDefinition(activeTemplateId.value, definition.id, { binding_enabled: bindingEnabled })
+    ElMessage.success('模板指标已更新')
+    await loadTemplateDefinitions()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '更新模板指标失败')
+    await loadTemplateDefinitions()
+  } finally {
+    updatingBindingKey.value = ''
+  }
+}
+
 async function selectTemplate(row?: OidTemplate): Promise<void> {
   activeTemplateId.value = row?.id || ''
   await loadTemplateDefinitions()
@@ -181,6 +204,17 @@ onMounted(loadData)
             <el-form-item label="描述">
               <el-input v-model="templateForm.description" placeholder="可选" />
             </el-form-item>
+            <el-form-item label="厂商">
+              <el-input v-model="templateForm.vendor" placeholder="例如 huawei" />
+            </el-form-item>
+            <el-form-item label="设备类型">
+              <el-select v-model="templateForm.device_type" class="form-template-select" placeholder="选择设备类型">
+                <el-option label="交换机" value="switch" />
+                <el-option label="路由器" value="router" />
+                <el-option label="防火墙" value="firewall" />
+                <el-option label="通用设备" value="generic" />
+              </el-select>
+            </el-form-item>
             <el-form-item>
               <el-button type="success" native-type="submit">创建模板</el-button>
             </el-form-item>
@@ -188,6 +222,8 @@ onMounted(loadData)
 
           <el-table :data="templates" row-key="id" height="260" @current-change="selectTemplate">
             <el-table-column prop="name" label="模板名称" min-width="180" />
+            <el-table-column prop="vendor" label="厂商" width="100" />
+            <el-table-column prop="device_type" label="设备类型" width="110" />
             <el-table-column prop="definition_count" label="指标数" width="90" />
             <el-table-column label="状态" width="90">
               <template #default="{ row }">
@@ -255,13 +291,40 @@ onMounted(loadData)
         <el-button type="primary" @click="attachDefinition">加入模板</el-button>
       </div>
       <el-table :data="templateDefinitions" row-key="id" empty-text="请选择模板或添加指标">
-        <el-table-column prop="name" label="指标名称" min-width="180" />
+        <el-table-column label="指标名称" min-width="190">
+          <template #default="{ row }">
+            <div class="metric-name">{{ row.display_name || row.name }}</div>
+            <div class="metric-code">{{ row.name }}</div>
+          </template>
+        </el-table-column>
         <el-table-column prop="oid" label="OID" min-width="260" show-overflow-tooltip />
         <el-table-column prop="metric_kind" label="类型" width="120" />
+        <el-table-column prop="value_type" label="值类型" width="110" />
+        <el-table-column prop="scale" label="倍率" width="90" />
+        <el-table-column prop="precision" label="精度" width="80" />
         <el-table-column prop="aggregate_method" label="聚合" width="100" />
         <el-table-column prop="display_group" label="分组" width="100" />
         <el-table-column prop="vendor" label="厂商" width="100" />
         <el-table-column prop="unit" label="单位" width="100" />
+        <el-table-column label="图表" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.chartable ? 'success' : 'info'">{{ row.chartable ? '是' : '否' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="告警" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.alertable ? 'warning' : 'info'">{{ row.alertable ? '是' : '否' }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="采集" width="90" fixed="right">
+          <template #default="{ row }">
+            <el-switch
+              :model-value="row.binding_enabled"
+              :loading="updatingBindingKey === `${activeTemplateId}:${row.id}`"
+              @change="(value: boolean) => changeTemplateDefinitionFlag(row, value)"
+            />
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -302,5 +365,16 @@ onMounted(loadData)
 <style scoped>
 .form-template-select {
   width: 190px;
+}
+
+.metric-name {
+  font-weight: 600;
+  color: #1f2d3d;
+}
+
+.metric-code {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #8a97a8;
 }
 </style>

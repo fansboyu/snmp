@@ -98,9 +98,9 @@ PostgreSQL 数据库容器。
 | --- | --- |
 | `devices` | 网络设备配置，例如名称、IP、端口、SNMP v2c community、SNMP v3 认证参数、是否启用 |
 | `device_groups` | 设备分组配置，绑定 OID 模板 |
-| `oid_templates` | OID 模板配置 |
-| `oid_template_definitions` | OID 模板和指标定义的绑定关系 |
-| `metric_definitions` | SNMP OID 指标定义，例如 `sysUpTime`、`ifNumber` |
+| `oid_templates` | OID 模板配置，包含厂商和设备类型元数据 |
+| `oid_template_definitions` | OID 模板和指标定义的绑定关系，支持单项启停和必选标记 |
+| `metric_definitions` | SNMP OID 指标定义，例如 `sysUpTime`、`ifNumber`，包含显示名、值类型、倍率、精度、图表/告警能力标记 |
 | `metric_samples` | 采集结果样本，按设备和指标保存 |
 | `device_interfaces` | 设备接口清单，按 `ifIndex` 维护最新接口信息 |
 | `interface_metric_samples` | 接口表采集样本，按设备、接口和指标保存 |
@@ -501,11 +501,18 @@ curl http://localhost:13000/api/metrics/definitions
 | `name` | string | 指标名称 |
 | `oid` | string | SNMP OID |
 | `unit` | string | 单位 |
+| `display_name` | string | 页面显示名，未设置时回退为 `name` |
+| `description` | string | 指标说明 |
 | `metric_kind` | string | 指标类型，`scalar`、`walk` 或 `interface` |
 | `table_oid` | string | 接口表基础 OID |
+| `value_type` | string | 值类型，例如 `gauge`、`counter`、`status`、`string`、`timeticks` |
+| `scale` | number/string | 采集值入库前的倍率，默认 `1` |
+| `precision` | number | 数值显示和入库格式化精度，默认 `2` |
 | `aggregate_method` | string | Walk 指标聚合方式，例如 `max`、`avg`、`sum`、`latest`、`first` |
 | `display_group` | string | 图表归类，例如 `cpu`、`memory` |
 | `vendor` | string | 厂商标识，例如 `huawei` |
+| `chartable` | boolean | 是否适合作为图表指标 |
+| `alertable` | boolean | 是否适合作为告警指标 |
 | `enabled` | boolean | 是否启用 |
 
 #### `GET /api/metrics/templates`
@@ -514,15 +521,19 @@ curl http://localhost:13000/api/metrics/definitions
 
 #### `POST /api/metrics/templates`
 
-新增 OID 模板，字段包括 `name`、`description`、`enabled`。
+新增 OID 模板，字段包括 `name`、`description`、`vendor`、`device_type`、`enabled`。
 
 #### `GET /api/metrics/templates/:id/definitions`
 
-查询模板绑定的指标定义。
+查询模板绑定的指标定义，返回指标定义字段以及绑定字段 `sort_order`、`binding_enabled`、`required`。
 
 #### `POST /api/metrics/templates/:id/definitions`
 
-向模板加入指标定义，字段包括 `metric_id`、`sort_order`。
+向模板加入指标定义，字段包括 `metric_id`、`sort_order`、`enabled`、`required`。
+
+#### `PATCH /api/metrics/templates/:id/definitions/:metricId`
+
+更新模板内某个指标绑定，支持修改 `sort_order`、`enabled`、`required`。采集器只会读取模板中 `enabled=true` 的绑定项。
 
 #### `GET /api/device-groups`
 
@@ -764,6 +775,8 @@ Docker 初始化 PostgreSQL 时会自动写入默认数据。
 | `huaweiMemoryUsage` | `.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7` | `%` |
 
 默认模板会包含 Huawei CPU/内存 Walk 指标，已有默认分组设备升级后也会自动尝试采集；同时内置 `华为 SNMP 模板`，后续可按厂商或设备类型创建新模板，把对应 OID 以 `walk + 聚合方式` 维护进去。
+
+指标定义支持显示名、说明、值类型、倍率、精度、图表能力和告警能力等元数据。模板绑定支持单项启停和必选标记，采集器会跳过模板中已停用的绑定项；`scale` 会在样本写入前应用，适合处理部分厂商把百分比、容量或计数值按固定倍率返回的场景。
 
 ### 默认样本与告警
 

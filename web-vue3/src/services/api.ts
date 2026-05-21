@@ -25,13 +25,22 @@ export interface MetricDefinition {
   name: string
   oid: string
   unit: string
+  display_name?: string | null
+  description?: string | null
   metric_kind: 'scalar' | 'interface' | 'walk'
   table_oid?: string | null
+  value_type?: 'gauge' | 'counter' | 'status' | 'string' | 'timeticks' | string
+  scale?: string | number
+  precision?: number
   aggregate_method?: 'latest' | 'max' | 'avg' | 'sum' | 'first' | string
   display_group?: string | null
   vendor?: string | null
+  chartable?: boolean
+  alertable?: boolean
   enabled: boolean
   sort_order?: number
+  binding_enabled?: boolean
+  required?: boolean
 }
 
 export interface DeviceGroup {
@@ -47,6 +56,8 @@ export interface OidTemplate {
   id: string
   name: string
   description?: string | null
+  vendor?: string | null
+  device_type?: string | null
   enabled: boolean
   definition_count?: number
 }
@@ -406,7 +417,7 @@ export async function listOidTemplates(): Promise<OidTemplate[]> {
   return request('/api/metrics/templates')
 }
 
-export async function createOidTemplate(payload: Pick<OidTemplate, 'name' | 'description' | 'enabled'>): Promise<OidTemplate> {
+export async function createOidTemplate(payload: Pick<OidTemplate, 'name' | 'description' | 'vendor' | 'device_type' | 'enabled'>): Promise<OidTemplate> {
   return request('/api/metrics/templates', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -423,6 +434,23 @@ export async function addTemplateDefinition(templateId: string, metricId: string
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ metric_id: metricId, sort_order: sortOrder })
+  })
+}
+
+export async function updateTemplateDefinition(
+  templateId: string,
+  metricId: string,
+  payload: Partial<Pick<MetricDefinition, 'sort_order' | 'binding_enabled' | 'required'>>
+): Promise<unknown> {
+  const body = {
+    sort_order: payload.sort_order,
+    enabled: payload.binding_enabled,
+    required: payload.required
+  }
+  return request(`/api/metrics/templates/${templateId}/definitions/${metricId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
   })
 }
 

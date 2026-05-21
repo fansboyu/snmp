@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -209,7 +210,7 @@ func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, 
 			DeviceID:   device.ID,
 			MetricID:   metric.ID,
 			MetricName: metric.Name,
-			Value:      snmpValueText(variable.Value),
+			Value:      scaledSNMPValueText(metric, variable.Value),
 			CreatedAt:  now,
 		})
 	}
@@ -255,7 +256,7 @@ func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, me
 			DeviceID:   device.ID,
 			MetricID:   metric.ID,
 			MetricName: metric.Name,
-			Value:      formatFloat(aggregateValues(values, metric.AggregateMethod)),
+			Value:      formatMetricFloat(metric, aggregateValues(values, metric.AggregateMethod)*metricScale(metric)),
 			CreatedAt:  now,
 		})
 	}
@@ -280,7 +281,7 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 				return nil
 			}
 
-			value := snmpValueText(variable.Value)
+			value := scaledSNMPValueText(metric, variable.Value)
 			info := InterfaceInfo{
 				DeviceID:   device.ID,
 				IfIndex:    ifIndex,
@@ -833,6 +834,21 @@ func snmpNumericValue(value interface{}) (float64, bool) {
 	return number, err == nil
 }
 
+func scaledSNMPValueText(metric MetricDefinition, value interface{}) string {
+	number, ok := snmpNumericValue(value)
+	if !ok {
+		return snmpValueText(value)
+	}
+	return formatMetricFloat(metric, number*metricScale(metric))
+}
+
+func metricScale(metric MetricDefinition) float64 {
+	if metric.Scale == 0 {
+		return 1
+	}
+	return metric.Scale
+}
+
 func aggregateValues(values []float64, method string) float64 {
 	if len(values) == 0 {
 		return 0
@@ -871,6 +887,20 @@ func formatFloat(value float64) string {
 		return strconv.FormatInt(int64(value), 10)
 	}
 	return strconv.FormatFloat(value, 'f', 2, 64)
+}
+
+func formatMetricFloat(metric MetricDefinition, value float64) string {
+	precision := metric.Precision
+	if precision < 0 {
+		precision = 2
+	}
+	if precision == 0 {
+		return strconv.FormatInt(int64(math.Round(value)), 10)
+	}
+	if value == float64(int64(value)) {
+		return strconv.FormatInt(int64(value), 10)
+	}
+	return strconv.FormatFloat(value, 'f', precision, 64)
 }
 
 func community(device Device, fallback string) string {

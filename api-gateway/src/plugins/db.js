@@ -16,6 +16,17 @@ export const dbPlugin = fp(async (app) => {
     alter table metric_definitions add column if not exists aggregate_method text not null default 'latest';
     alter table metric_definitions add column if not exists display_group text;
     alter table metric_definitions add column if not exists vendor text;
+    alter table oid_templates add column if not exists vendor text;
+    alter table oid_templates add column if not exists device_type text;
+    alter table metric_definitions add column if not exists display_name text;
+    alter table metric_definitions add column if not exists description text;
+    alter table metric_definitions add column if not exists value_type text not null default 'gauge';
+    alter table metric_definitions add column if not exists scale numeric not null default 1;
+    alter table metric_definitions add column if not exists precision integer not null default 2;
+    alter table metric_definitions add column if not exists chartable boolean not null default true;
+    alter table metric_definitions add column if not exists alertable boolean not null default false;
+    alter table oid_template_definitions add column if not exists enabled boolean not null default true;
+    alter table oid_template_definitions add column if not exists required boolean not null default false;
     create index if not exists idx_alert_notifications_pending
       on alert_notifications(status, next_retry_at);
     create unique index if not exists uq_alert_notifications_event_channel_target_subject
@@ -152,19 +163,80 @@ export const dbPlugin = fp(async (app) => {
     select '默认拓扑', '手动维护的默认网络拓扑', true
     where not exists (select 1 from topology_maps where is_default = true)
     on conflict (name) do nothing;
-    insert into oid_templates (name, description)
-    values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标')
-    on conflict (name) do nothing;
-    insert into metric_definitions (name, oid, unit, metric_kind, table_oid, aggregate_method, display_group, vendor)
+    insert into oid_templates (name, description, vendor, device_type)
+    values ('华为 SNMP 模板', '华为交换机 CPU、内存、系统指标和接口表指标', 'huawei', 'switch')
+    on conflict (name) do update set
+      vendor = coalesce(oid_templates.vendor, excluded.vendor),
+      device_type = coalesce(oid_templates.device_type, excluded.device_type);
+    update oid_templates
+    set vendor = coalesce(vendor, 'generic'),
+      device_type = coalesce(device_type, 'switch')
+    where name = '默认 SNMP 模板';
+    insert into metric_definitions (
+      name, oid, unit, display_name, description, metric_kind, table_oid, value_type, scale, precision,
+      aggregate_method, display_group, vendor, chartable, alertable
+    )
     values
-      ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'max', 'cpu', 'huawei'),
-      ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'max', 'memory', 'huawei')
+      ('huaweiCpuUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', '%', '华为 CPU 使用率', '华为交换机 CPU 使用率 Walk 指标', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.5', 'gauge', 1, 0, 'max', 'cpu', 'huawei', true, true),
+      ('huaweiMemoryUsage', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', '%', '华为内存使用率', '华为交换机内存使用率 Walk 指标', 'walk', '.1.3.6.1.4.1.2011.5.25.31.1.1.1.1.7', 'gauge', 1, 0, 'max', 'memory', 'huawei', true, true)
     on conflict (oid) do update set
+      display_name = excluded.display_name,
+      description = excluded.description,
       metric_kind = excluded.metric_kind,
       table_oid = excluded.table_oid,
+      value_type = excluded.value_type,
+      scale = excluded.scale,
+      precision = excluded.precision,
       aggregate_method = excluded.aggregate_method,
       display_group = excluded.display_group,
-      vendor = excluded.vendor;
+      vendor = excluded.vendor,
+      chartable = excluded.chartable,
+      alertable = excluded.alertable;
+    update metric_definitions
+    set display_name = case name
+        when 'sysUpTime' then '系统运行时间'
+        when 'ifNumber' then '接口数量'
+        when 'cpuUsage' then 'CPU 使用率'
+        when 'ifDescr' then '接口描述'
+        when 'ifOperStatus' then '接口运行状态'
+        when 'ifInOctets' then '接口入方向字节数'
+        when 'ifOutOctets' then '接口出方向字节数'
+        else coalesce(display_name, name)
+      end,
+      description = case name
+        when 'sysUpTime' then 'SNMP sysUpTime 系统运行时间'
+        when 'ifNumber' then 'SNMP ifNumber 接口数量'
+        when 'cpuUsage' then 'HOST-RESOURCES-MIB CPU 使用率'
+        when 'ifDescr' then 'SNMP ifDescr 接口描述'
+        when 'ifOperStatus' then 'SNMP ifOperStatus 接口运行状态'
+        when 'ifInOctets' then 'SNMP ifInOctets 接口入方向累计字节数'
+        when 'ifOutOctets' then 'SNMP ifOutOctets 接口出方向累计字节数'
+        else description
+      end,
+      value_type = case name
+        when 'sysUpTime' then 'timeticks'
+        when 'ifDescr' then 'string'
+        when 'ifOperStatus' then 'status'
+        when 'ifInOctets' then 'counter'
+        when 'ifOutOctets' then 'counter'
+        else coalesce(value_type, 'gauge')
+      end,
+      scale = coalesce(scale, 1),
+      precision = case when name in ('sysUpTime', 'ifNumber', 'cpuUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets') then 0 else precision end,
+      display_group = case name
+        when 'sysUpTime' then 'system'
+        when 'ifNumber' then 'system'
+        when 'cpuUsage' then 'cpu'
+        when 'ifDescr' then 'interface'
+        when 'ifOperStatus' then 'interface'
+        when 'ifInOctets' then 'interface'
+        when 'ifOutOctets' then 'interface'
+        else display_group
+      end,
+      vendor = coalesce(vendor, 'generic'),
+      chartable = case when name in ('cpuUsage', 'ifOperStatus', 'ifInOctets', 'ifOutOctets') then true when name in ('sysUpTime', 'ifNumber', 'ifDescr') then false else chartable end,
+      alertable = case when name in ('cpuUsage', 'ifOperStatus') then true when name in ('sysUpTime', 'ifNumber', 'ifDescr', 'ifInOctets', 'ifOutOctets') then false else alertable end
+    where name in ('sysUpTime', 'ifNumber', 'cpuUsage', 'ifDescr', 'ifOperStatus', 'ifInOctets', 'ifOutOctets');
     insert into oid_template_definitions (template_id, metric_id, sort_order)
     select t.id, m.id,
       case m.name
@@ -193,6 +265,11 @@ export const dbPlugin = fp(async (app) => {
     join metric_definitions m on m.name in ('huaweiCpuUsage', 'huaweiMemoryUsage')
     where t.name = '默认 SNMP 模板'
     on conflict (template_id, metric_id) do nothing;
+    update oid_template_definitions td
+    set required = true
+    from metric_definitions m
+    where m.id = td.metric_id
+      and m.name in ('cpuUsage', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifOperStatus');
   `)
 
   app.addHook('onClose', async () => {
