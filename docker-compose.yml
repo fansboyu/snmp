@@ -43,6 +43,27 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - snmp-monitor-net
+
+  migrator:
+    build:
+      context: ./api-gateway
+    container_name: snmp-monitor-migrator
+    command: ["node", "src/migrate.js"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      MIGRATION_BASELINE_SQL: /app/schema.sql
+      MIGRATIONS_DIR: /app/migrations
+    volumes:
+      - ./postgres/schema.sql:/app/schema.sql:ro
+      - ./postgres/migrations:/app/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - snmp-monitor-net
 
@@ -69,6 +90,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     networks:
       - snmp-monitor-net
 
@@ -84,6 +107,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     networks:
       - snmp-monitor-net
 
@@ -107,6 +132,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
     networks:
       - snmp-monitor-net
 

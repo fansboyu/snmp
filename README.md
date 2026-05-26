@@ -16,7 +16,8 @@
 .
 ├── api-gateway/          # Fastify API 网关
 ├── collector-go/         # Go SNMP 采集器
-├── postgres/             # PostgreSQL schema 与默认数据
+├── postgres/             # PostgreSQL schema、迁移脚本与默认数据
+│   └── migrations/       # 增量数据库迁移 SQL
 ├── scripts/              # 本地辅助脚本
 ├── web-vue3/             # Vue 3 前端
 ├── docker-compose.yml    # Docker Compose 编排
@@ -30,6 +31,8 @@
 ```powershell
 docker compose up -d --build
 ```
+
+启动过程中会先运行一次性数据库迁移容器 `snmp-monitor-migrator`。它只负责补齐数据库结构和内置默认数据，执行成功后会退出；在 `docker compose ps -a` 中看到 `snmp-monitor-migrator` 为 `Exited (0)` 是正常状态，不代表服务异常。
 
 启动后访问：
 
@@ -56,6 +59,43 @@ docker compose down -v
 > docker exec snmp-monitor-postgres psql -U snmp -d snmp_monitor -f /docker-entrypoint-initdb.d/002-seed.sql
 > docker restart snmp-monitor-collector
 > ```
+
+## Docker 升级与数据库迁移
+
+客户通过 Docker 方式升级时，核心原则是保留 PostgreSQL 数据卷。不要执行 `docker compose down -v`、`docker volume rm ...postgres-data` 或 `docker system prune --volumes`，否则会删除设备、拓扑、告警和历史样本数据。
+
+推荐升级流程：
+
+```powershell
+docker exec snmp-monitor-postgres pg_dump -U snmp -d snmp_monitor > snmp_monitor_backup.sql
+docker compose down
+git fetch --tags
+git checkout v1.5.4
+docker compose up -d --build
+docker compose ps -a
+```
+
+`snmp-monitor-migrator` 会在 PostgreSQL 健康后自动执行：
+
+1. 确保 `schema_migrations` 迁移记录表存在。
+2. 执行当前 `postgres/schema.sql` 作为 `001_baseline_v1_5_3`，用于补齐旧版本数据库结构。
+3. 按编号执行 `postgres/migrations/` 中尚未执行过的增量 SQL。
+4. 每个迁移成功后写入 `schema_migrations`，后续启动不会重复执行同一版本。
+
+如果迁移失败，`snmp-monitor-migrator` 会以非 0 状态退出，依赖它的 API、采集器、自动发现和通知服务不会继续启动。此时先查看日志并修复问题：
+
+```powershell
+docker logs snmp-monitor-migrator
+```
+
+迁移成功后的常见状态：
+
+```text
+snmp-monitor-migrator   Exited (0)
+snmp-monitor-api        Up
+snmp-monitor-collector  Up
+snmp-monitor-web        Up
+```
 
 ## 容器说明
 
@@ -107,9 +147,36 @@ PostgreSQL 数据库容器。
 | `alert_rules` | 告警规则，例如 CPU 阈值、接口 Down |
 | `alert_events` | 告警事件，记录 active/resolved 状态 |
 | `alert_notifications` | 告警通知记录，预留 Web/邮件/企业 IM 等渠道 |
+| `schema_migrations` | 数据库迁移记录，记录已经执行过的 baseline 和增量 SQL |
 | `topology_maps` | 拓扑图配置，当前内置默认拓扑 |
 | `topology_nodes` | 拓扑节点，支持绑定设备或自定义节点 |
 | `topology_links` | 拓扑连线，支持手动链路和接口引用 |
+
+### `snmp-monitor-migrator`
+
+一次性数据库迁移任务容器。
+
+**构建目录**
+
+- `api-gateway/`
+
+**主要功能**
+
+- 在 PostgreSQL 健康后运行。
+- 执行 `postgres/schema.sql` 作为 `001_baseline_v1_5_3`，兼容旧版本数据库升级。
+- 执行 `postgres/migrations/` 中未执行过的增量迁移。
+- 将成功执行的版本写入 `schema_migrations`。
+- 执行成功后正常退出，`Exited (0)` 是预期状态。
+
+**环境变量**
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DATABASE_URL` | `postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable` | 数据库连接地址 |
+| `MIGRATION_BASELINE_SQL` | `/app/schema.sql` | baseline SQL 文件路径 |
+| `MIGRATIONS_DIR` | `/app/migrations` | 增量迁移目录 |
+
+新增数据库变更时，优先在 `postgres/migrations/` 中增加形如 `002_xxx.sql` 的文件。`001` 已保留给当前 baseline，不要在增量目录中使用。
 
 ### `snmp-monitor-api`
 
