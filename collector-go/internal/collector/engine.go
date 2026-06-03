@@ -38,6 +38,7 @@ type Engine struct {
 	MaxRepetitions   uint32
 	DefaultCommunity string
 	Notifications    NotificationSettings
+	StorageGuard     StorageGuard
 }
 
 func (engine Engine) Run(ctx context.Context) error {
@@ -82,17 +83,33 @@ func (engine Engine) cleanupOldData(ctx context.Context) {
 		log.Printf("cleanup old data failed: %v", err)
 		return
 	}
-	if stats.MetricSamples > 0 || stats.InterfaceSamples > 0 || stats.ResolvedAlerts > 0 {
+	if stats.MetricSamples > 0 ||
+		stats.InterfaceSamples > 0 ||
+		stats.ResolvedAlerts > 0 ||
+		stats.AlertNotifications > 0 ||
+		stats.DiscoveryJobs > 0 {
 		log.Printf(
-			"cleanup old data completed: metric_samples=%d interface_samples=%d resolved_alerts=%d",
+			"cleanup old data completed: metric_samples=%d interface_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
 			stats.MetricSamples,
 			stats.InterfaceSamples,
 			stats.ResolvedAlerts,
+			stats.AlertNotifications,
+			stats.DiscoveryJobs,
 		)
 	}
 }
 
 func (engine Engine) collectOnce(ctx context.Context) error {
+	decision := engine.StorageGuard.Evaluate(ctx, engine.Store)
+	if decision.Protected {
+		log.Printf(
+			"storage protection active; skip this collection cycle: path=%s used=%.2f%%",
+			decision.Usage.Path,
+			decision.Usage.UsedPercent,
+		)
+		return nil
+	}
+
 	devices, err := engine.Store.ListEnabledDevices(ctx)
 	if err != nil {
 		return err

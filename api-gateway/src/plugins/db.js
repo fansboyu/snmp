@@ -8,6 +8,14 @@ export const dbPlugin = fp(async (app) => {
 
   app.decorate('db', pool)
   await pool.query(`
+    create table if not exists admin_users (
+      id bigserial primary key,
+      username text not null unique,
+      display_name text not null default '系统管理员',
+      password_hash text not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now()
+    );
     alter table alert_notifications add column if not exists subject text;
     alter table alert_notifications add column if not exists error text;
     alter table alert_notifications add column if not exists retry_count integer not null default 0;

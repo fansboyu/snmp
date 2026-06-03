@@ -112,20 +112,28 @@ type AlertEvent struct {
 }
 
 type RetentionPolicy struct {
-	MetricSamplesDays    int
-	InterfaceSamplesDays int
-	ResolvedAlertsDays   int
-	BatchSize            int
+	MetricSamplesDays      int
+	InterfaceSamplesDays   int
+	ResolvedAlertsDays     int
+	AlertNotificationsDays int
+	DiscoveryHistoryDays   int
+	BatchSize              int
 }
 
 func (policy RetentionPolicy) Enabled() bool {
-	return policy.MetricSamplesDays > 0 || policy.InterfaceSamplesDays > 0 || policy.ResolvedAlertsDays > 0
+	return policy.MetricSamplesDays > 0 ||
+		policy.InterfaceSamplesDays > 0 ||
+		policy.ResolvedAlertsDays > 0 ||
+		policy.AlertNotificationsDays > 0 ||
+		policy.DiscoveryHistoryDays > 0
 }
 
 type CleanupStats struct {
-	MetricSamples    int64
-	InterfaceSamples int64
-	ResolvedAlerts   int64
+	MetricSamples      int64
+	InterfaceSamples   int64
+	ResolvedAlerts     int64
+	AlertNotifications int64
+	DiscoveryJobs      int64
 }
 
 type AlertNotification struct {

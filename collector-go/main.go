@@ -29,10 +29,12 @@ func main() {
 		Interval:        durationEnv("COLLECT_INTERVAL_SECONDS", 60),
 		CleanupInterval: durationEnv("CLEANUP_INTERVAL_SECONDS", 3600),
 		RetentionPolicy: collector.RetentionPolicy{
-			MetricSamplesDays:    intEnv("METRIC_SAMPLE_RETENTION_DAYS", 30),
-			InterfaceSamplesDays: intEnv("INTERFACE_SAMPLE_RETENTION_DAYS", 30),
-			ResolvedAlertsDays:   intEnv("RESOLVED_ALERT_RETENTION_DAYS", 90),
-			BatchSize:            intEnv("CLEANUP_BATCH_SIZE", 5000),
+			MetricSamplesDays:      intEnv("METRIC_SAMPLE_RETENTION_DAYS", 30),
+			InterfaceSamplesDays:   intEnv("INTERFACE_SAMPLE_RETENTION_DAYS", 30),
+			ResolvedAlertsDays:     intEnv("RESOLVED_ALERT_RETENTION_DAYS", 90),
+			AlertNotificationsDays: intEnv("ALERT_NOTIFICATION_RETENTION_DAYS", 90),
+			DiscoveryHistoryDays:   intEnv("DISCOVERY_HISTORY_RETENTION_DAYS", 30),
+			BatchSize:              intEnv("CLEANUP_BATCH_SIZE", 5000),
 		},
 		Timeout:          durationEnv("SNMP_TIMEOUT_SECONDS", 3),
 		Retries:          intEnv("SNMP_RETRIES", 1),
@@ -44,6 +46,22 @@ func main() {
 			Targets:       listEnv("ALERT_EMAIL_TO"),
 			SendResolved:  boolEnv("ALERT_EMAIL_SEND_RESOLVED", true),
 			SubjectPrefix: env("ALERT_EMAIL_SUBJECT_PREFIX", "[SNMP Monitor]"),
+		},
+		StorageGuard: collector.StorageGuard{
+			Path:            env("STORAGE_GUARD_PATH", ""),
+			WarningPercent:  floatEnv("STORAGE_GUARD_WARNING_USED_PERCENT", 85),
+			ReadOnlyPercent: floatEnv("STORAGE_GUARD_READONLY_USED_PERCENT", 90),
+			CleanupPercent:  floatEnv("STORAGE_GUARD_CLEANUP_USED_PERCENT", 90),
+			RecoveryPercent: floatEnv("STORAGE_GUARD_RECOVERY_USED_PERCENT", 85),
+			CleanupCooldown: durationEnv("STORAGE_GUARD_CLEANUP_COOLDOWN_SECONDS", 600),
+			EmergencyRetention: collector.RetentionPolicy{
+				MetricSamplesDays:      intEnv("EMERGENCY_METRIC_SAMPLE_RETENTION_DAYS", 7),
+				InterfaceSamplesDays:   intEnv("EMERGENCY_INTERFACE_SAMPLE_RETENTION_DAYS", 7),
+				ResolvedAlertsDays:     intEnv("EMERGENCY_RESOLVED_ALERT_RETENTION_DAYS", 30),
+				AlertNotificationsDays: intEnv("EMERGENCY_ALERT_NOTIFICATION_RETENTION_DAYS", 30),
+				DiscoveryHistoryDays:   intEnv("EMERGENCY_DISCOVERY_HISTORY_RETENTION_DAYS", 7),
+				BatchSize:              intEnv("EMERGENCY_CLEANUP_BATCH_SIZE", 10000),
+			},
 		},
 	}
 
@@ -63,6 +81,14 @@ func env(key string, fallback string) string {
 
 func intEnv(key string, fallback int) int {
 	value, err := strconv.Atoi(os.Getenv(key))
+	if err != nil {
+		return fallback
+	}
+	return value
+}
+
+func floatEnv(key string, fallback float64) float64 {
+	value, err := strconv.ParseFloat(os.Getenv(key), 64)
 	if err != nil {
 		return fallback
 	}

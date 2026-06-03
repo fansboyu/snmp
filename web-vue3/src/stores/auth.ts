@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { clearAuthToken, getAuthToken, login, setAuthToken, type AuthUser } from '../services/api'
+import { changePassword, clearAuthToken, getAuthToken, login, setAuthToken, type AuthUser } from '../services/api'
 
 const storageKey = 'snmp-monitor-user'
 
@@ -30,8 +30,10 @@ export const useAuthStore = defineStore('auth', {
       clearAuthToken()
       localStorage.removeItem(storageKey)
     },
-    changeAdminPassword(_currentPassword: string, _newPassword: string) {
-      throw new Error('管理员密码由后端环境变量 ADMIN_PASSWORD 管理')
+    async changeAdminPassword(currentPassword: string, newPassword: string) {
+      const result = await changePassword(currentPassword, newPassword)
+      this.user = result.user
+      localStorage.setItem(storageKey, JSON.stringify(result.user))
     }
   }
 })

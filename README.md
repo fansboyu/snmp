@@ -26,7 +26,9 @@
 
 ## Docker 快速启动
 
-仓库根目录已内置默认 `.env`，克隆后可直接构建启动；生产环境建议至少修改 `JWT_SECRET` 和 `ADMIN_PASSWORD`。
+仓库根目录已内置默认 `.env`，克隆后可直接构建启动；生产环境建议至少修改 `JWT_SECRET` 和首次初始化用的 `ADMIN_PASSWORD`。
+
+首次启动时，系统会使用 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 初始化数据库管理员账号。初始化完成后，管理员密码保存在 PostgreSQL 的 `admin_users` 表中，可在页面左下角“修改密码”入口修改；后续修改 `.env` 中的 `ADMIN_PASSWORD` 不会覆盖已经存在的数据库管理员密码。
 
 ```powershell
 docker compose up -d --build
@@ -70,7 +72,7 @@ docker compose down -v
 docker exec snmp-monitor-postgres pg_dump -U snmp -d snmp_monitor > snmp_monitor_backup.sql
 docker compose down
 git fetch --tags
-git checkout v1.5.4
+git checkout v1.5.5
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -137,6 +139,7 @@ PostgreSQL 数据库容器。
 | 表名 | 说明 |
 | --- | --- |
 | `devices` | 网络设备配置，例如名称、IP、端口、SNMP v2c community、SNMP v3 认证参数、是否启用 |
+| `admin_users` | 系统管理员账号和密码哈希，首次启动由 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 初始化 |
 | `device_groups` | 设备分组配置，绑定 OID 模板 |
 | `oid_templates` | OID 模板配置，包含厂商和设备类型元数据 |
 | `oid_template_definitions` | OID 模板和指标定义的绑定关系，支持单项启停和必选标记 |
@@ -237,7 +240,21 @@ Go SNMP 采集器容器。
 | `METRIC_SAMPLE_RETENTION_DAYS` | `30` | 标量样本保留天数；小于等于 `0` 表示不清理 |
 | `INTERFACE_SAMPLE_RETENTION_DAYS` | `30` | 接口样本保留天数；小于等于 `0` 表示不清理 |
 | `RESOLVED_ALERT_RETENTION_DAYS` | `90` | 已恢复告警事件保留天数；小于等于 `0` 表示不清理 |
+| `ALERT_NOTIFICATION_RETENTION_DAYS` | `90` | 告警通知记录保留天数；小于等于 `0` 表示不清理 |
+| `DISCOVERY_HISTORY_RETENTION_DAYS` | `30` | 已完成、失败或取消的自动发现任务保留天数；小于等于 `0` 表示不清理 |
 | `CLEANUP_BATCH_SIZE` | `5000` | 单批删除行数，避免一次清理大表锁太久 |
+| `STORAGE_GUARD_PATH` | `/postgres-data` | 存储保护检查路径；Docker 部署中只读挂载 PostgreSQL 数据卷用于判断磁盘水位 |
+| `STORAGE_GUARD_WARNING_USED_PERCENT` | `85` | 磁盘使用率达到该百分比后输出 warning 日志 |
+| `STORAGE_GUARD_READONLY_USED_PERCENT` | `90` | 磁盘使用率达到该百分比后进入保护模式，暂停本轮采集写入 |
+| `STORAGE_GUARD_CLEANUP_USED_PERCENT` | `90` | 磁盘使用率达到该百分比后触发紧急旧数据清理 |
+| `STORAGE_GUARD_RECOVERY_USED_PERCENT` | `85` | 磁盘使用率恢复到该百分比以下后退出保护模式 |
+| `STORAGE_GUARD_CLEANUP_COOLDOWN_SECONDS` | `600` | 紧急清理冷却时间，避免短时间重复清理 |
+| `EMERGENCY_METRIC_SAMPLE_RETENTION_DAYS` | `7` | 紧急清理时标量样本至少保留天数 |
+| `EMERGENCY_INTERFACE_SAMPLE_RETENTION_DAYS` | `7` | 紧急清理时接口样本至少保留天数 |
+| `EMERGENCY_RESOLVED_ALERT_RETENTION_DAYS` | `30` | 紧急清理时已恢复告警至少保留天数 |
+| `EMERGENCY_ALERT_NOTIFICATION_RETENTION_DAYS` | `30` | 紧急清理时通知记录至少保留天数 |
+| `EMERGENCY_DISCOVERY_HISTORY_RETENTION_DAYS` | `7` | 紧急清理时自动发现历史至少保留天数 |
+| `EMERGENCY_CLEANUP_BATCH_SIZE` | `10000` | 紧急清理单批删除行数 |
 | `SNMP_TIMEOUT_SECONDS` | `3` | SNMP 请求超时，单位秒 |
 | `SNMP_RETRIES` | `1` | SNMP 请求重试次数 |
 | `WORKER_COUNT` | `16` | 并发采集 worker 数量 |
@@ -258,7 +275,8 @@ Go SNMP 采集器容器。
 6. 写入 `metric_samples`、`device_interfaces` 和 `interface_metric_samples`。
 7. 根据 CPU 阈值和接口 Down 规则生成或恢复告警事件。
 8. 邮件通知启用时，告警首次触发和恢复会写入 `alert_notifications` 队列。
-9. 按保留策略定时分批清理历史样本和已恢复告警事件。
+9. 按保留策略定时分批清理历史样本、已恢复告警、通知记录和自动发现历史。
+10. 检测到数据库数据卷磁盘高水位时，先执行紧急旧数据清理；达到只读保护阈值后暂停本轮采集写入，避免继续压垮 PostgreSQL。
 
 > 默认不包含内置 SNMP Agent 容器。请先在 `devices` 中添加你自己的 SNMP 设备，采集器才会开始产生样本。
 
@@ -361,7 +379,7 @@ Vue 3 前端容器。
 
 | 路由 | 页面 | 说明 |
 | --- | --- | --- |
-| `/login` | 登录页 | 本地演示登录，默认账号 `admin / admin123` |
+| `/login` | 登录页 | 管理员登录，默认首次初始化账号 `admin / admin123` |
 | `/dashboard` | 监控概览 | 展示 API 状态、统计卡片、CPU、接口流量、接口状态和采集趋势 |
 | `/devices` | 设备管理 | 查询设备、搜索设备、添加设备、修改设备分组，点击设备名称进入详情 |
 | `/discovery` | 自动发现 | 创建 SNMP v2c CIDR 发现任务，查看结果并手动导入设备 |
@@ -860,8 +878,38 @@ v1.5.1 已内置 PostgreSQL 历史数据保留策略，默认保留：
 - 标量样本 `metric_samples`：`30` 天。
 - 接口样本 `interface_metric_samples`：`30` 天。
 - 已恢复告警 `alert_events(status='resolved')`：`90` 天。
+- 告警通知 `alert_notifications`：`90` 天。
+- 自动发现历史 `discovery_jobs` / `discovery_results`：`30` 天。
 
 采集器每 `CLEANUP_INTERVAL_SECONDS` 秒执行一次清理，并按 `CLEANUP_BATCH_SIZE` 分批删除，适合普通 PostgreSQL 的中小规模部署。
+
+### 存储保护模式
+
+Docker 部署中，采集器会只读挂载 PostgreSQL 数据卷到 `/postgres-data`，并用该路径判断数据库所在文件系统的磁盘水位。
+
+默认策略：
+
+- 使用率达到 `85%`：输出磁盘水位 warning 日志。
+- 使用率达到 `90%`：执行紧急旧数据清理，并进入保护模式。
+- 保护模式下：采集器暂停本轮 SNMP 采集和写库，设备配置、拓扑、模板和已有历史数据仍保留。
+- 使用率恢复到 `85%` 以下：自动退出保护模式，恢复采集。
+
+紧急清理只处理历史数据，不会删除设备、分组、模板、拓扑和告警规则：
+
+- `interface_metric_samples`
+- `metric_samples`
+- 已恢复的 `alert_events`
+- `alert_notifications`
+- 已完成、失败或取消的 `discovery_jobs` 及其结果
+
+也可以通过 API 手动触发一次旧数据清理：
+
+```bash
+curl -X POST http://localhost:13000/api/system/cleanup \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"metricSamplesDays":7,"interfaceSamplesDays":7,"resolvedAlertsDays":30,"alertNotificationsDays":30,"discoveryHistoryDays":7,"batchSize":10000}'
+```
 
 当满足以下任一情况时，建议引入 TimescaleDB：
 

@@ -45,7 +45,7 @@ function openPasswordDialog(): void {
   passwordDialogVisible.value = true
 }
 
-function changePassword(): void {
+async function changePassword(): Promise<void> {
   if (passwordForm.newPassword !== passwordForm.confirmPassword) {
     ElMessage.error('两次输入的新密码不一致')
     return
@@ -53,7 +53,7 @@ function changePassword(): void {
 
   passwordSaving.value = true
   try {
-    authStore.changeAdminPassword(passwordForm.currentPassword, passwordForm.newPassword)
+    await authStore.changeAdminPassword(passwordForm.currentPassword, passwordForm.newPassword)
     ElMessage.success('管理员密码已更新')
     passwordDialogVisible.value = false
   } catch (error) {

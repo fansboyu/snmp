@@ -1076,6 +1076,41 @@ func (store *PostgresStore) CleanupOldData(ctx context.Context, policy collector
 		stats.ResolvedAlerts = deleted
 	}
 
+	if policy.AlertNotificationsDays > 0 {
+		deleted, err := store.deleteOldRows(ctx, `
+			delete from alert_notifications
+			where id in (
+				select id
+				from alert_notifications
+				where created_at < now() - make_interval(days => $1)
+				order by created_at
+				limit $2
+			)
+		`, policy.AlertNotificationsDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.AlertNotifications = deleted
+	}
+
+	if policy.DiscoveryHistoryDays > 0 {
+		deleted, err := store.deleteOldRows(ctx, `
+			delete from discovery_jobs
+			where id in (
+				select id
+				from discovery_jobs
+				where created_at < now() - make_interval(days => $1)
+					and status in ('completed', 'failed', 'canceled')
+				order by created_at
+				limit $2
+			)
+		`, policy.DiscoveryHistoryDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.DiscoveryJobs = deleted
+	}
+
 	return stats, nil
 }
 

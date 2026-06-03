@@ -1,6 +1,6 @@
 {
   "name": "snmp-monitor-web-vue3",
-  "version": "1.5.4",
+  "version": "1.5.5",
   "private": true,
   "type": "module",
   "scripts": {

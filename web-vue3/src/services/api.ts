@@ -363,6 +363,14 @@ export async function getCurrentUser(): Promise<{ user: AuthUser }> {
   return request('/api/auth/me')
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ user: AuthUser }> {
+  return request('/api/auth/password', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ currentPassword, newPassword })
+  })
+}
+
 export async function listDevices(): Promise<Device[]> {
   return request('/api/devices')
 }
