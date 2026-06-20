@@ -30,14 +30,24 @@ export async function systemRoutes(app) {
       select
         count(*)::bigint as metric_samples,
         (select count(*)::bigint from interface_metric_samples) as interface_samples,
+        (select count(*)::bigint from metric_sample_rollups) as metric_rollups,
+        (select count(*)::bigint from interface_metric_sample_rollups) as interface_rollups,
         (select count(*)::bigint from alert_notifications) as alert_notifications,
         (select count(*)::bigint from discovery_jobs) as discovery_jobs
       from metric_samples
     `)
+    const rollups = await app.db.query(`
+      select
+        (select min(bucket_start) from metric_sample_rollups) as metric_first_bucket,
+        (select max(bucket_start) from metric_sample_rollups) as metric_last_bucket,
+        (select min(bucket_start) from interface_metric_sample_rollups) as interface_first_bucket,
+        (select max(bucket_start) from interface_metric_sample_rollups) as interface_last_bucket
+    `)
 
     return {
       database: database.rows[0],
-      rows: tables.rows[0]
+      rows: tables.rows[0],
+      rollups: rollups.rows[0]
     }
   })
 
@@ -46,6 +56,7 @@ export async function systemRoutes(app) {
     const retentionDays = {
       metricSamples: positiveNumber(body.metricSamplesDays, 30),
       interfaceSamples: positiveNumber(body.interfaceSamplesDays, 30),
+      rollupSamples: positiveNumber(body.rollupSamplesDays, 365),
       resolvedAlerts: positiveNumber(body.resolvedAlertsDays, 90),
       alertNotifications: positiveNumber(body.alertNotificationsDays, 90),
       discoveryHistory: positiveNumber(body.discoveryHistoryDays, 30)
@@ -55,6 +66,7 @@ export async function systemRoutes(app) {
     const stats = {
       metricSamples: 0,
       interfaceSamples: 0,
+      rollupSamples: 0,
       resolvedAlerts: 0,
       alertNotifications: 0,
       discoveryJobs: 0
@@ -81,6 +93,29 @@ export async function systemRoutes(app) {
         limit $2
       )
     `, retentionDays.metricSamples, batchSize)
+
+    const metricRollups = await deleteOldRows(app, `
+      delete from metric_sample_rollups
+      where ctid in (
+        select ctid
+        from metric_sample_rollups
+        where bucket_start < now() - make_interval(days => $1)
+        order by bucket_start
+        limit $2
+      )
+    `, retentionDays.rollupSamples, batchSize)
+
+    const interfaceRollups = await deleteOldRows(app, `
+      delete from interface_metric_sample_rollups
+      where ctid in (
+        select ctid
+        from interface_metric_sample_rollups
+        where bucket_start < now() - make_interval(days => $1)
+        order by bucket_start
+        limit $2
+      )
+    `, retentionDays.rollupSamples, batchSize)
+    stats.rollupSamples = metricRollups + interfaceRollups
 
     stats.resolvedAlerts = await deleteOldRows(app, `
       delete from alert_events

@@ -232,6 +232,8 @@ export interface DiscoveryResult {
   sys_name?: string | null
   sys_descr?: string | null
   sys_object_id?: string | null
+  recommended_template_id?: string | null
+  recommended_template_name?: string | null
   response_ms?: number | null
   status: 'discovered' | 'imported'
   device_id?: string | null

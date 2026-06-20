@@ -31,10 +31,17 @@ func main() {
 		RetentionPolicy: collector.RetentionPolicy{
 			MetricSamplesDays:      intEnv("METRIC_SAMPLE_RETENTION_DAYS", 30),
 			InterfaceSamplesDays:   intEnv("INTERFACE_SAMPLE_RETENTION_DAYS", 30),
+			RollupSamplesDays:      intEnv("ROLLUP_SAMPLE_RETENTION_DAYS", 365),
 			ResolvedAlertsDays:     intEnv("RESOLVED_ALERT_RETENTION_DAYS", 90),
 			AlertNotificationsDays: intEnv("ALERT_NOTIFICATION_RETENTION_DAYS", 90),
 			DiscoveryHistoryDays:   intEnv("DISCOVERY_HISTORY_RETENTION_DAYS", 30),
 			BatchSize:              intEnv("CLEANUP_BATCH_SIZE", 5000),
+		},
+		RollupPolicy: collector.RollupPolicy{
+			Enabled:        boolEnv("ROLLUP_ENABLED", true),
+			Interval:       durationEnv("ROLLUP_INTERVAL_SECONDS", 300),
+			BucketSeconds:  intEnv("ROLLUP_BUCKET_SECONDS", 300),
+			LookbackWindow: durationEnv("ROLLUP_LOOKBACK_SECONDS", 900),
 		},
 		Timeout:          durationEnv("SNMP_TIMEOUT_SECONDS", 3),
 		Retries:          intEnv("SNMP_RETRIES", 1),
@@ -57,6 +64,7 @@ func main() {
 			EmergencyRetention: collector.RetentionPolicy{
 				MetricSamplesDays:      intEnv("EMERGENCY_METRIC_SAMPLE_RETENTION_DAYS", 7),
 				InterfaceSamplesDays:   intEnv("EMERGENCY_INTERFACE_SAMPLE_RETENTION_DAYS", 7),
+				RollupSamplesDays:      intEnv("EMERGENCY_ROLLUP_SAMPLE_RETENTION_DAYS", 90),
 				ResolvedAlertsDays:     intEnv("EMERGENCY_RESOLVED_ALERT_RETENTION_DAYS", 30),
 				AlertNotificationsDays: intEnv("EMERGENCY_ALERT_NOTIFICATION_RETENTION_DAYS", 30),
 				DiscoveryHistoryDays:   intEnv("EMERGENCY_DISCOVERY_HISTORY_RETENTION_DAYS", 7),

@@ -25,6 +25,7 @@ type Store interface {
 	ResolveAlertEvent(context.Context, int64, int64, int64, string) (*AlertEvent, error)
 	CreateAlertNotification(context.Context, AlertNotification) error
 	CleanupOldData(context.Context, RetentionPolicy) (CleanupStats, error)
+	RollupSamples(context.Context, RollupPolicy) (RollupStats, error)
 }
 
 type Engine struct {
@@ -32,6 +33,7 @@ type Engine struct {
 	Interval         time.Duration
 	CleanupInterval  time.Duration
 	RetentionPolicy  RetentionPolicy
+	RollupPolicy     RollupPolicy
 	Timeout          time.Duration
 	Retries          int
 	WorkerCount      int
@@ -56,6 +58,13 @@ func (engine Engine) Run(ctx context.Context) error {
 		engine.cleanupOldData(ctx)
 	}
 
+	var rollupTicker *time.Ticker
+	if engine.RollupPolicy.Runnable() {
+		rollupTicker = time.NewTicker(engine.RollupPolicy.Interval)
+		defer rollupTicker.Stop()
+		engine.rollupSamples(ctx)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -66,11 +75,17 @@ func (engine Engine) Run(ctx context.Context) error {
 			}
 		case <-cleanupChan(cleanupTicker):
 			engine.cleanupOldData(ctx)
+		case <-tickerChan(rollupTicker):
+			engine.rollupSamples(ctx)
 		}
 	}
 }
 
 func cleanupChan(ticker *time.Ticker) <-chan time.Time {
+	return tickerChan(ticker)
+}
+
+func tickerChan(ticker *time.Ticker) <-chan time.Time {
 	if ticker == nil {
 		return nil
 	}
@@ -85,16 +100,35 @@ func (engine Engine) cleanupOldData(ctx context.Context) {
 	}
 	if stats.MetricSamples > 0 ||
 		stats.InterfaceSamples > 0 ||
+		stats.RollupSamples > 0 ||
 		stats.ResolvedAlerts > 0 ||
 		stats.AlertNotifications > 0 ||
 		stats.DiscoveryJobs > 0 {
 		log.Printf(
-			"cleanup old data completed: metric_samples=%d interface_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
+			"cleanup old data completed: metric_samples=%d interface_samples=%d rollup_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
 			stats.MetricSamples,
 			stats.InterfaceSamples,
+			stats.RollupSamples,
 			stats.ResolvedAlerts,
 			stats.AlertNotifications,
 			stats.DiscoveryJobs,
+		)
+	}
+}
+
+func (engine Engine) rollupSamples(ctx context.Context) {
+	stats, err := engine.Store.RollupSamples(ctx, engine.RollupPolicy)
+	if err != nil {
+		log.Printf("rollup samples failed: %v", err)
+		return
+	}
+	if stats.MetricSamples > 0 || stats.InterfaceSamples > 0 {
+		log.Printf(
+			"rollup samples completed: metric_rollups=%d interface_rollups=%d bucket_seconds=%d lookback=%s",
+			stats.MetricSamples,
+			stats.InterfaceSamples,
+			engine.RollupPolicy.BucketSeconds,
+			engine.RollupPolicy.LookbackWindow,
 		)
 	}
 }
@@ -370,9 +404,30 @@ func (engine Engine) evaluateAlerts(ctx context.Context, device Device, samples 
 			engine.evaluateCPUAlert(ctx, device, rule, samples)
 		case "interface_down":
 			engine.evaluateInterfaceDownAlert(ctx, device, rule, interfaceSamples)
+		case "device_no_data":
+			engine.evaluateDeviceNoDataAlert(ctx, device, rule, samples, interfaceSamples)
 		}
 	}
 	return nil
+}
+
+func (engine Engine) evaluateDeviceNoDataAlert(ctx context.Context, device Device, rule AlertRule, samples []MetricSample, interfaceSamples []InterfaceMetricSample) {
+	title := "Device no data"
+	if len(samples) == 0 && len(interfaceSamples) == 0 {
+		now := time.Now().UTC()
+		engine.upsertAlertEvent(ctx, AlertEvent{
+			RuleID:     rule.ID,
+			DeviceID:   device.ID,
+			Severity:   severity(rule.Severity),
+			Title:      title,
+			Message:    fmt.Sprintf("%s has no SNMP samples in this collection cycle", device.Name),
+			Value:      "no_data",
+			CreatedAt:  now,
+			DeviceName: device.Name,
+		})
+		return
+	}
+	engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, title)
 }
 
 func (engine Engine) evaluateCPUAlert(ctx context.Context, device Device, rule AlertRule, samples []MetricSample) {

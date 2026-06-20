@@ -1,17 +1,48 @@
 const rangeMap = {
   '1h': '1 hour',
   '6h': '6 hours',
-  '24h': '24 hours'
+  '24h': '24 hours',
+  '7d': '7 days',
+  '30d': '30 days'
 }
+
+const rollupBucketSeconds = 300
 
 function rangeInterval(range) {
   return rangeMap[range] ?? rangeMap['1h']
 }
 
+function shouldUseRollup(range) {
+  return range && range !== '1h'
+}
+
 export async function chartRoutes(app) {
   app.get('/cpu', async (request) => {
     const deviceId = request.query.deviceId
+    const range = request.query.range
     const interval = rangeInterval(request.query.range)
+    if (shouldUseRollup(range)) {
+      const result = await app.db.query(
+        `
+          select
+            r.bucket_start as time,
+            avg(r.avg_value) as value
+          from metric_sample_rollups r
+          join metric_definitions m on m.id = r.metric_id
+          where r.bucket_seconds = $3
+            and r.bucket_start >= now() - $2::interval
+            and ($1::bigint is null or r.device_id = $1)
+            and (m.display_group = 'cpu' or m.name ilike '%cpu%' or m.name = 'hrProcessorLoad')
+          group by 1
+          order by 1
+        `,
+        [deviceId ?? null, interval, rollupBucketSeconds]
+      )
+      return result.rows.map((row) => ({
+        time: row.time,
+        value: row.value === null ? null : Number(row.value)
+      }))
+    }
     const result = await app.db.query(
       `
         select
@@ -35,7 +66,30 @@ export async function chartRoutes(app) {
 
   app.get('/memory', async (request) => {
     const deviceId = request.query.deviceId
+    const range = request.query.range
     const interval = rangeInterval(request.query.range)
+    if (shouldUseRollup(range)) {
+      const result = await app.db.query(
+        `
+          select
+            r.bucket_start as time,
+            avg(r.avg_value) as value
+          from metric_sample_rollups r
+          join metric_definitions m on m.id = r.metric_id
+          where r.bucket_seconds = $3
+            and r.bucket_start >= now() - $2::interval
+            and ($1::bigint is null or r.device_id = $1)
+            and (m.display_group = 'memory' or m.name ilike '%mem%' or m.name ilike '%memory%')
+          group by 1
+          order by 1
+        `,
+        [deviceId ?? null, interval, rollupBucketSeconds]
+      )
+      return result.rows.map((row) => ({
+        time: row.time,
+        value: row.value === null ? null : Number(row.value)
+      }))
+    }
     const result = await app.db.query(
       `
         select
@@ -60,7 +114,50 @@ export async function chartRoutes(app) {
   app.get('/interface-traffic', async (request) => {
     const deviceId = request.query.deviceId
     const interfaceId = request.query.interfaceId
+    const range = request.query.range
     const interval = rangeInterval(request.query.range)
+    if (shouldUseRollup(range)) {
+      const result = await app.db.query(
+        `
+          with ordered as (
+            select
+              r.bucket_start as created_at,
+              r.interface_id,
+              m.name as metric_name,
+              r.last_value as value,
+              lag(r.last_value)
+                over (partition by r.interface_id, m.name order by r.bucket_start) as previous_value,
+              lag(r.bucket_start)
+                over (partition by r.interface_id, m.name order by r.bucket_start) as previous_time
+            from interface_metric_sample_rollups r
+            join metric_definitions m on m.id = r.metric_id
+            where r.bucket_seconds = $4
+              and r.bucket_start >= now() - $3::interval
+              and ($1::bigint is null or r.device_id = $1)
+              and ($2::bigint is null or r.interface_id = $2)
+              and m.name in ('ifInOctets', 'ifOutOctets')
+          )
+          select
+            created_at as time,
+            metric_name,
+            greatest(((value - previous_value) * 8) / nullif(extract(epoch from created_at - previous_time), 0), 0) as bps
+          from ordered
+          where previous_value is not null and value >= previous_value
+          order by created_at
+        `,
+        [deviceId ?? null, interfaceId ?? null, interval, rollupBucketSeconds]
+      )
+
+      const buckets = new Map()
+      for (const row of result.rows) {
+        const key = new Date(row.time).toISOString()
+        const point = buckets.get(key) ?? { time: row.time, in_bps: 0, out_bps: 0 }
+        if (row.metric_name === 'ifInOctets') point.in_bps += Number(row.bps)
+        if (row.metric_name === 'ifOutOctets') point.out_bps += Number(row.bps)
+        buckets.set(key, point)
+      }
+      return Array.from(buckets.values())
+    }
     const result = await app.db.query(
       `
         with ordered as (
@@ -125,7 +222,35 @@ export async function chartRoutes(app) {
 
   app.get('/collection-trend', async (request) => {
     const deviceId = request.query.deviceId
+    const range = request.query.range
     const interval = rangeInterval(request.query.range)
+    if (shouldUseRollup(range)) {
+      const result = await app.db.query(
+        `
+          with samples as (
+            select bucket_start, sample_count
+            from metric_sample_rollups
+            where bucket_seconds = $3
+              and bucket_start >= now() - $2::interval
+              and ($1::bigint is null or device_id = $1)
+            union all
+            select bucket_start, sample_count
+            from interface_metric_sample_rollups
+            where bucket_seconds = $3
+              and bucket_start >= now() - $2::interval
+              and ($1::bigint is null or device_id = $1)
+          )
+          select
+            bucket_start as time,
+            sum(sample_count)::integer as count
+          from samples
+          group by 1
+          order by 1
+        `,
+        [deviceId ?? null, interval, rollupBucketSeconds]
+      )
+      return result.rows
+    }
     const result = await app.db.query(
       `
         with samples as (

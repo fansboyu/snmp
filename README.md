@@ -26,6 +26,10 @@
 
 ## Docker 快速启动
 
+Linux 服务器首次部署、备份、版本升级和回滚的完整说明见：
+
+- [`docs/linux-deployment-and-upgrade.md`](docs/linux-deployment-and-upgrade.md)
+
 仓库根目录已内置默认 `.env`，克隆后可直接构建启动；生产环境建议至少修改 `JWT_SECRET` 和首次初始化用的 `ADMIN_PASSWORD`。
 
 首次启动时，系统会使用 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 初始化数据库管理员账号。初始化完成后，管理员密码保存在 PostgreSQL 的 `admin_users` 表中，可在页面左下角“修改密码”入口修改；后续修改 `.env` 中的 `ADMIN_PASSWORD` 不会覆盖已经存在的数据库管理员密码。
@@ -882,6 +886,45 @@ v1.5.1 已内置 PostgreSQL 历史数据保留策略，默认保留：
 - 自动发现历史 `discovery_jobs` / `discovery_results`：`30` 天。
 
 采集器每 `CLEANUP_INTERVAL_SECONDS` 秒执行一次清理，并按 `CLEANUP_BATCH_SIZE` 分批删除，适合普通 PostgreSQL 的中小规模部署。
+
+### 普通 PostgreSQL 聚合表
+
+当前改造中，采集器会在不更换数据库容器的前提下，把近期原始样本旁路聚合到 5 分钟粒度的普通 PostgreSQL 表：
+
+- `metric_sample_rollups`：标量指标聚合结果。
+- `interface_metric_sample_rollups`：接口维度指标聚合结果。
+
+聚合表会保存每个时间桶内的 `min_value`、`max_value`、`avg_value`、`last_value` 和 `sample_count`。默认配置如下：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `ROLLUP_ENABLED` | `true` | 是否启用普通 PostgreSQL 聚合表写入 |
+| `ROLLUP_INTERVAL_SECONDS` | `300` | 聚合任务执行间隔 |
+| `ROLLUP_BUCKET_SECONDS` | `300` | 聚合时间桶大小，默认 5 分钟 |
+| `ROLLUP_LOOKBACK_SECONDS` | `900` | 每次回看最近多久的数据，默认 15 分钟 |
+
+当前聚合功能仍保留原始样本写入：采集器会照常写入 `metric_samples` 和 `interface_metric_samples`，同时生成聚合表。最近 1 小时图表继续使用原始样本，大范围图表自动切换到聚合表。
+
+大范围图表查询会优先使用聚合表：
+
+- `1h`：继续查询原始样本表，保留最近细节。
+- `6h`、`24h`、`7d`、`30d`：查询 5 分钟聚合表，降低大范围查询对原始样本表的压力。
+
+默认 Docker 部署中，接口原始样本保留期为 `15` 天，聚合样本保留期为 `365` 天。可通过以下环境变量调整：
+
+| 环境变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `INTERFACE_SAMPLE_RETENTION_DAYS` | `15` | 接口原始样本保留天数 |
+| `ROLLUP_SAMPLE_RETENTION_DAYS` | `365` | 聚合样本保留天数 |
+| `EMERGENCY_ROLLUP_SAMPLE_RETENTION_DAYS` | `90` | 存储保护紧急清理时聚合样本保留天数 |
+
+升级前可在 Linux 服务器上执行备份脚本：
+
+```bash
+sh scripts/backup-before-upgrade.sh
+```
+
+脚本会导出 `.env`、`docker-compose.yml`、容器状态、版本信息和 PostgreSQL 压缩备份。
 
 ### 存储保护模式
 

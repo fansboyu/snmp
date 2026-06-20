@@ -269,6 +269,9 @@ onBeforeUnmount(() => {
         <el-table-column prop="sys_name" label="sysName" min-width="160" show-overflow-tooltip />
         <el-table-column prop="sys_descr" label="sysDescr" min-width="260" show-overflow-tooltip />
         <el-table-column prop="sys_object_id" label="sysObjectID" min-width="160" show-overflow-tooltip />
+        <el-table-column prop="recommended_template_name" label="推荐模板" min-width="150">
+          <template #default="{ row }">{{ row.recommended_template_name || '-' }}</template>
+        </el-table-column>
         <el-table-column prop="response_ms" label="响应(ms)" width="100" />
         <el-table-column label="导入状态" width="120">
           <template #default="{ row }">

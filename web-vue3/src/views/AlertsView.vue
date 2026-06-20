@@ -253,6 +253,7 @@ onMounted(loadData)
               <el-select v-model="ruleForm.rule_type">
                 <el-option label="CPU 阈值" value="cpu_threshold" />
                 <el-option label="接口 Down" value="interface_down" />
+                <el-option label="设备无数据" value="device_no_data" />
               </el-select>
             </el-form-item>
             <el-form-item label="级别">

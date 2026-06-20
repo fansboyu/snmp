@@ -35,6 +35,45 @@ export const dbPlugin = fp(async (app) => {
     alter table metric_definitions add column if not exists alertable boolean not null default false;
     alter table oid_template_definitions add column if not exists enabled boolean not null default true;
     alter table oid_template_definitions add column if not exists required boolean not null default false;
+    create table if not exists metric_sample_rollups (
+      device_id bigint not null references devices(id) on delete cascade,
+      metric_id bigint not null references metric_definitions(id) on delete cascade,
+      bucket_seconds integer not null,
+      bucket_start timestamptz not null,
+      min_value numeric,
+      max_value numeric,
+      avg_value numeric,
+      last_value numeric,
+      sample_count integer not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      primary key (device_id, metric_id, bucket_seconds, bucket_start)
+    );
+    create table if not exists interface_metric_sample_rollups (
+      device_id bigint not null references devices(id) on delete cascade,
+      interface_id bigint not null references device_interfaces(id) on delete cascade,
+      metric_id bigint not null references metric_definitions(id) on delete cascade,
+      bucket_seconds integer not null,
+      bucket_start timestamptz not null,
+      min_value numeric,
+      max_value numeric,
+      avg_value numeric,
+      last_value numeric,
+      sample_count integer not null,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      primary key (device_id, interface_id, metric_id, bucket_seconds, bucket_start)
+    );
+    create index if not exists idx_metric_rollups_bucket
+      on metric_sample_rollups(bucket_seconds, bucket_start desc);
+    create index if not exists idx_metric_rollups_device_bucket
+      on metric_sample_rollups(device_id, bucket_seconds, bucket_start desc);
+    create index if not exists idx_interface_rollups_bucket
+      on interface_metric_sample_rollups(bucket_seconds, bucket_start desc);
+    create index if not exists idx_interface_rollups_device_bucket
+      on interface_metric_sample_rollups(device_id, bucket_seconds, bucket_start desc);
+    create index if not exists idx_interface_rollups_interface_bucket
+      on interface_metric_sample_rollups(interface_id, bucket_seconds, bucket_start desc);
     create index if not exists idx_alert_notifications_pending
       on alert_notifications(status, next_retry_at);
     create unique index if not exists uq_alert_notifications_event_channel_target_subject
@@ -278,6 +317,9 @@ export const dbPlugin = fp(async (app) => {
     from metric_definitions m
     where m.id = td.metric_id
       and m.name in ('cpuUsage', 'huaweiCpuUsage', 'huaweiMemoryUsage', 'ifOperStatus');
+    insert into alert_rules (name, rule_type, severity, metric_name, operator, threshold, duration_seconds, enabled)
+    values ('设备采集无数据', 'device_no_data', 'critical', null, null, null, 0, true)
+    on conflict (name) do nothing;
   `)
 
   app.addHook('onClose', async () => {

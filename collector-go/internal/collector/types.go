@@ -114,6 +114,7 @@ type AlertEvent struct {
 type RetentionPolicy struct {
 	MetricSamplesDays      int
 	InterfaceSamplesDays   int
+	RollupSamplesDays      int
 	ResolvedAlertsDays     int
 	AlertNotificationsDays int
 	DiscoveryHistoryDays   int
@@ -123,6 +124,7 @@ type RetentionPolicy struct {
 func (policy RetentionPolicy) Enabled() bool {
 	return policy.MetricSamplesDays > 0 ||
 		policy.InterfaceSamplesDays > 0 ||
+		policy.RollupSamplesDays > 0 ||
 		policy.ResolvedAlertsDays > 0 ||
 		policy.AlertNotificationsDays > 0 ||
 		policy.DiscoveryHistoryDays > 0
@@ -131,9 +133,26 @@ func (policy RetentionPolicy) Enabled() bool {
 type CleanupStats struct {
 	MetricSamples      int64
 	InterfaceSamples   int64
+	RollupSamples      int64
 	ResolvedAlerts     int64
 	AlertNotifications int64
 	DiscoveryJobs      int64
+}
+
+type RollupPolicy struct {
+	Enabled        bool
+	Interval       time.Duration
+	BucketSeconds  int
+	LookbackWindow time.Duration
+}
+
+func (policy RollupPolicy) Runnable() bool {
+	return policy.Enabled && policy.Interval > 0 && policy.BucketSeconds > 0 && policy.LookbackWindow > 0
+}
+
+type RollupStats struct {
+	MetricSamples    int64
+	InterfaceSamples int64
 }
 
 type AlertNotification struct {

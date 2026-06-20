@@ -156,6 +156,8 @@ export async function discoveryRoutes(app) {
           r.sys_name,
           r.sys_descr,
           r.sys_object_id,
+          rt.id as recommended_template_id,
+          rt.name as recommended_template_name,
           r.response_ms,
           r.status,
           r.device_id,
@@ -165,6 +167,14 @@ export async function discoveryRoutes(app) {
           r.imported_at
         from discovery_results r
         left join devices d on d.id = r.device_id
+        left join lateral (
+          select id, name
+          from oid_templates
+          where enabled = true
+            and vendor = ${recommendedVendorSql('r.sys_descr', 'r.sys_object_id')}
+          order by id
+          limit 1
+        ) rt on true
         where r.job_id = $1
           and (
             $2::text is null
@@ -205,6 +215,8 @@ export async function discoveryRoutes(app) {
               r.port,
               r.snmp_version,
               r.sys_name,
+              r.sys_descr,
+              r.sys_object_id,
               j.community,
               r.device_id
             from discovery_results r
@@ -250,6 +262,8 @@ export async function discoveryRoutes(app) {
         }
 
         const deviceName = row.sys_name || `Discovered ${row.host}`
+        const requestedGroupId = String(group_id ?? '').trim()
+        const targetGroupId = requestedGroupId || await recommendedGroupId(client, row.sys_descr, row.sys_object_id)
         const device = await client.query(
           `
             insert into devices (
@@ -264,7 +278,7 @@ export async function discoveryRoutes(app) {
             values ($1, $2::inet, $3, $4, $5, '2c', $6)
             returning id, name, host(host) as host, port, enabled
           `,
-          [deviceName, row.host, row.port, group_id || null, row.community || 'public', enabled]
+          [deviceName, row.host, row.port, targetGroupId, row.community || 'public', enabled]
         )
         await client.query(
           `
@@ -333,4 +347,59 @@ function clampNumber(value, min, max) {
 
 function maskSecret(value) {
   return value ? '******' : ''
+}
+
+function recommendedVendor(sysDescr, sysObjectId) {
+  const text = `${sysDescr ?? ''} ${sysObjectId ?? ''}`.toLowerCase()
+  if (text.includes('huawei') || text.includes('2011')) return 'huawei'
+  if (text.includes('h3c') || text.includes('25506')) return 'h3c'
+  if (text.includes('cisco') || text.includes('9.')) return 'cisco'
+  return 'generic'
+}
+
+function recommendedVendorSql(sysDescrExpression, sysObjectIdExpression) {
+  return `
+    case
+      when lower(coalesce(${sysDescrExpression}, '') || ' ' || coalesce(${sysObjectIdExpression}, '')) like '%huawei%'
+        or coalesce(${sysObjectIdExpression}, '') like '%.2011.%'
+        or coalesce(${sysObjectIdExpression}, '') like '.1.3.6.1.4.1.2011%'
+      then 'huawei'
+      when lower(coalesce(${sysDescrExpression}, '') || ' ' || coalesce(${sysObjectIdExpression}, '')) like '%h3c%'
+        or coalesce(${sysObjectIdExpression}, '') like '.1.3.6.1.4.1.25506%'
+      then 'h3c'
+      when lower(coalesce(${sysDescrExpression}, '') || ' ' || coalesce(${sysObjectIdExpression}, '')) like '%cisco%'
+        or coalesce(${sysObjectIdExpression}, '') like '.1.3.6.1.4.1.9%'
+      then 'cisco'
+      else 'generic'
+    end
+  `
+}
+
+async function recommendedGroupId(client, sysDescr, sysObjectId) {
+  const vendor = recommendedVendor(sysDescr, sysObjectId)
+  const preferred = await client.query(
+    `
+      select g.id
+      from device_groups g
+      join oid_templates t on t.id = g.template_id
+      where t.enabled = true
+        and t.vendor = $1
+      order by g.id
+      limit 1
+    `,
+    [vendor]
+  )
+  if (preferred.rowCount > 0) {
+    return preferred.rows[0].id
+  }
+
+  const fallback = await client.query(
+    `
+      select id
+      from device_groups
+      order by case when name = '默认分组' then 0 else 1 end, id
+      limit 1
+    `
+  )
+  return fallback.rows[0]?.id ?? null
 }

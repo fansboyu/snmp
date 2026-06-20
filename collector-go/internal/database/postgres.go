@@ -171,6 +171,168 @@ func (store *PostgresStore) FinishDiscoveryJob(ctx context.Context, id int64, st
 	return err
 }
 
+func (store *PostgresStore) RollupSamples(ctx context.Context, policy collector.RollupPolicy) (collector.RollupStats, error) {
+	var stats collector.RollupStats
+	if !policy.Runnable() {
+		return stats, nil
+	}
+
+	bucketSeconds := policy.BucketSeconds
+	lookbackSeconds := int(policy.LookbackWindow.Seconds())
+	if lookbackSeconds <= 0 {
+		return stats, nil
+	}
+
+	metricResult, err := store.pool.Exec(ctx, `
+		with normalized as (
+			select
+				device_id,
+				metric_id,
+				to_timestamp(floor(extract(epoch from created_at) / $1::integer) * $1::integer) as bucket_start,
+				created_at,
+				substring(value_text from '[-+]?[0-9]+[.]?[0-9]*')::numeric as value
+			from metric_samples
+			where created_at >= now() - make_interval(secs => $2::integer)
+				and created_at < to_timestamp(floor(extract(epoch from now()) / $1::integer) * $1::integer)
+		),
+		source as (
+			select *
+			from normalized
+			where value is not null
+		),
+		aggregated as (
+			select
+				device_id,
+				metric_id,
+				bucket_start,
+				min(value) as min_value,
+				max(value) as max_value,
+				avg(value) as avg_value,
+				count(*)::integer as sample_count
+			from source
+			group by device_id, metric_id, bucket_start
+		),
+		latest as (
+			select distinct on (device_id, metric_id, bucket_start)
+				device_id,
+				metric_id,
+				bucket_start,
+				value as last_value
+			from source
+			order by device_id, metric_id, bucket_start, created_at desc
+		)
+		insert into metric_sample_rollups (
+			device_id, metric_id, bucket_seconds, bucket_start,
+			min_value, max_value, avg_value, last_value, sample_count, updated_at
+		)
+		select
+			aggregated.device_id,
+			aggregated.metric_id,
+			$1::integer,
+			aggregated.bucket_start,
+			aggregated.min_value,
+			aggregated.max_value,
+			aggregated.avg_value,
+			latest.last_value,
+			aggregated.sample_count,
+			now()
+		from aggregated
+		join latest
+			on latest.device_id = aggregated.device_id
+			and latest.metric_id = aggregated.metric_id
+			and latest.bucket_start = aggregated.bucket_start
+		on conflict (device_id, metric_id, bucket_seconds, bucket_start) do update set
+			min_value = excluded.min_value,
+			max_value = excluded.max_value,
+			avg_value = excluded.avg_value,
+			last_value = excluded.last_value,
+			sample_count = excluded.sample_count,
+			updated_at = now()
+	`, bucketSeconds, lookbackSeconds)
+	if err != nil {
+		return stats, err
+	}
+	stats.MetricSamples = metricResult.RowsAffected()
+
+	interfaceResult, err := store.pool.Exec(ctx, `
+		with normalized as (
+			select
+				device_id,
+				interface_id,
+				metric_id,
+				to_timestamp(floor(extract(epoch from created_at) / $1::integer) * $1::integer) as bucket_start,
+				created_at,
+				substring(value_text from '[-+]?[0-9]+[.]?[0-9]*')::numeric as value
+			from interface_metric_samples
+			where created_at >= now() - make_interval(secs => $2::integer)
+				and created_at < to_timestamp(floor(extract(epoch from now()) / $1::integer) * $1::integer)
+		),
+		source as (
+			select *
+			from normalized
+			where value is not null
+		),
+		aggregated as (
+			select
+				device_id,
+				interface_id,
+				metric_id,
+				bucket_start,
+				min(value) as min_value,
+				max(value) as max_value,
+				avg(value) as avg_value,
+				count(*)::integer as sample_count
+			from source
+			group by device_id, interface_id, metric_id, bucket_start
+		),
+		latest as (
+			select distinct on (device_id, interface_id, metric_id, bucket_start)
+				device_id,
+				interface_id,
+				metric_id,
+				bucket_start,
+				value as last_value
+			from source
+			order by device_id, interface_id, metric_id, bucket_start, created_at desc
+		)
+		insert into interface_metric_sample_rollups (
+			device_id, interface_id, metric_id, bucket_seconds, bucket_start,
+			min_value, max_value, avg_value, last_value, sample_count, updated_at
+		)
+		select
+			aggregated.device_id,
+			aggregated.interface_id,
+			aggregated.metric_id,
+			$1::integer,
+			aggregated.bucket_start,
+			aggregated.min_value,
+			aggregated.max_value,
+			aggregated.avg_value,
+			latest.last_value,
+			aggregated.sample_count,
+			now()
+		from aggregated
+		join latest
+			on latest.device_id = aggregated.device_id
+			and latest.interface_id = aggregated.interface_id
+			and latest.metric_id = aggregated.metric_id
+			and latest.bucket_start = aggregated.bucket_start
+		on conflict (device_id, interface_id, metric_id, bucket_seconds, bucket_start) do update set
+			min_value = excluded.min_value,
+			max_value = excluded.max_value,
+			avg_value = excluded.avg_value,
+			last_value = excluded.last_value,
+			sample_count = excluded.sample_count,
+			updated_at = now()
+	`, bucketSeconds, lookbackSeconds)
+	if err != nil {
+		return stats, err
+	}
+	stats.InterfaceSamples = interfaceResult.RowsAffected()
+
+	return stats, nil
+}
+
 func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err := pool.Exec(ctx, `
 		alter table alert_notifications add column if not exists subject text;
@@ -192,6 +354,45 @@ func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 		alter table metric_definitions add column if not exists alertable boolean not null default false;
 		alter table oid_template_definitions add column if not exists enabled boolean not null default true;
 		alter table oid_template_definitions add column if not exists required boolean not null default false;
+		create table if not exists metric_sample_rollups (
+			device_id bigint not null references devices(id) on delete cascade,
+			metric_id bigint not null references metric_definitions(id) on delete cascade,
+			bucket_seconds integer not null,
+			bucket_start timestamptz not null,
+			min_value numeric,
+			max_value numeric,
+			avg_value numeric,
+			last_value numeric,
+			sample_count integer not null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			primary key (device_id, metric_id, bucket_seconds, bucket_start)
+		);
+		create table if not exists interface_metric_sample_rollups (
+			device_id bigint not null references devices(id) on delete cascade,
+			interface_id bigint not null references device_interfaces(id) on delete cascade,
+			metric_id bigint not null references metric_definitions(id) on delete cascade,
+			bucket_seconds integer not null,
+			bucket_start timestamptz not null,
+			min_value numeric,
+			max_value numeric,
+			avg_value numeric,
+			last_value numeric,
+			sample_count integer not null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			primary key (device_id, interface_id, metric_id, bucket_seconds, bucket_start)
+		);
+		create index if not exists idx_metric_rollups_bucket
+			on metric_sample_rollups(bucket_seconds, bucket_start desc);
+		create index if not exists idx_metric_rollups_device_bucket
+			on metric_sample_rollups(device_id, bucket_seconds, bucket_start desc);
+		create index if not exists idx_interface_rollups_bucket
+			on interface_metric_sample_rollups(bucket_seconds, bucket_start desc);
+		create index if not exists idx_interface_rollups_device_bucket
+			on interface_metric_sample_rollups(device_id, bucket_seconds, bucket_start desc);
+		create index if not exists idx_interface_rollups_interface_bucket
+			on interface_metric_sample_rollups(interface_id, bucket_seconds, bucket_start desc);
 		create table if not exists device_neighbors (
 			id bigserial primary key,
 			device_id bigint not null references devices(id) on delete cascade,
@@ -1056,6 +1257,36 @@ func (store *PostgresStore) CleanupOldData(ctx context.Context, policy collector
 			return stats, err
 		}
 		stats.MetricSamples = deleted
+	}
+
+	if policy.RollupSamplesDays > 0 {
+		metricRollups, err := store.deleteOldRows(ctx, `
+			delete from metric_sample_rollups
+			where ctid in (
+				select ctid
+				from metric_sample_rollups
+				where bucket_start < now() - make_interval(days => $1)
+				order by bucket_start
+				limit $2
+			)
+		`, policy.RollupSamplesDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		interfaceRollups, err := store.deleteOldRows(ctx, `
+			delete from interface_metric_sample_rollups
+			where ctid in (
+				select ctid
+				from interface_metric_sample_rollups
+				where bucket_start < now() - make_interval(days => $1)
+				order by bucket_start
+				limit $2
+			)
+		`, policy.RollupSamplesDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.RollupSamples = metricRollups + interfaceRollups
 	}
 
 	if policy.ResolvedAlertsDays > 0 {

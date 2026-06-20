@@ -71,9 +71,10 @@ func (guard *StorageGuard) Evaluate(ctx context.Context, store Store) StorageDec
 			decision.CleanupRan = true
 			decision.CleanupStats = stats
 			log.Printf(
-				"emergency cleanup completed: metric_samples=%d interface_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
+				"emergency cleanup completed: metric_samples=%d interface_samples=%d rollup_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
 				stats.MetricSamples,
 				stats.InterfaceSamples,
+				stats.RollupSamples,
 				stats.ResolvedAlerts,
 				stats.AlertNotifications,
 				stats.DiscoveryJobs,
