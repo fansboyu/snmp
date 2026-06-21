@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log"
+	"mime"
 	"net"
 	"net/smtp"
 	"strings"
@@ -97,10 +98,36 @@ func (service Service) send(notification collector.AlertNotification) error {
 	case "implicit":
 		return sendImplicitTLS(address, service.SMTP.Host, service.SMTP.Timeout, auth, service.SMTP.From, []string{notification.Target}, message)
 	case "none":
-		return smtp.SendMail(address, auth, service.SMTP.From, []string{notification.Target}, message)
+		return sendPlain(address, service.SMTP.Host, service.SMTP.Timeout, auth, service.SMTP.From, []string{notification.Target}, message)
 	default:
-		return smtp.SendMail(address, auth, service.SMTP.From, []string{notification.Target}, message)
+		return sendStartTLS(address, service.SMTP.Host, service.SMTP.Timeout, auth, service.SMTP.From, []string{notification.Target}, message)
 	}
+}
+
+func sendStartTLS(address string, host string, timeout time.Duration, auth smtp.Auth, from string, to []string, message []byte) error {
+	client, err := newSMTPClient(address, host, timeout)
+	if err != nil {
+		return err
+	}
+	defer client.Quit()
+
+	if ok, _ := client.Extension("STARTTLS"); !ok {
+		return fmt.Errorf("smtp server does not advertise STARTTLS")
+	}
+	tlsConfig := &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+	if err := client.StartTLS(tlsConfig); err != nil {
+		return err
+	}
+	return sendWithClient(client, auth, from, to, message)
+}
+
+func sendPlain(address string, host string, timeout time.Duration, auth smtp.Auth, from string, to []string, message []byte) error {
+	client, err := newSMTPClient(address, host, timeout)
+	if err != nil {
+		return err
+	}
+	defer client.Quit()
+	return sendWithClient(client, auth, from, to, message)
 }
 
 func sendImplicitTLS(address string, host string, timeout time.Duration, auth smtp.Auth, from string, to []string, message []byte) error {
@@ -117,6 +144,24 @@ func sendImplicitTLS(address string, host string, timeout time.Duration, auth sm
 	}
 	defer client.Quit()
 
+	return sendWithClient(client, auth, from, to, message)
+}
+
+func newSMTPClient(address string, host string, timeout time.Duration) (*smtp.Client, error) {
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.Dial("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	client, err := smtp.NewClient(conn, host)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func sendWithClient(client *smtp.Client, auth smtp.Auth, from string, to []string, message []byte) error {
 	if auth != nil {
 		if err := client.Auth(auth); err != nil {
 			return err
@@ -155,7 +200,7 @@ func buildMessage(from string, to string, subject string, body string) []byte {
 	headers := []string{
 		fmt.Sprintf("From: %s", from),
 		fmt.Sprintf("To: %s", to),
-		fmt.Sprintf("Subject: %s", subject),
+		fmt.Sprintf("Subject: %s", mime.QEncoding.Encode("utf-8", subject)),
 		"MIME-Version: 1.0",
 		"Content-Type: text/plain; charset=UTF-8",
 		"Content-Transfer-Encoding: 8bit",

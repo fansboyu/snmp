@@ -299,6 +299,8 @@ Go SNMP 采集器容器。
 - 通过 SMTP 发送邮件。
 - 发送成功标记为 `sent`，失败后按 1 分钟、5 分钟、15 分钟重试，超过次数标记为 `failed`。
 - 启动时会把超时卡住的 `sending` 任务重置为 `pending`。
+- `SMTP_TLS_MODE=starttls` 会显式执行 STARTTLS 握手；`implicit` 用于 465 端口隐式 TLS；`none` 用于无 TLS 的内网 SMTP。
+- 告警中心的“发送测试邮件”按钮会创建一条测试通知，并通过同一个 notifier 队列发送，结果可在邮件通知记录中查看。
 
 **环境变量**
 
@@ -811,6 +813,10 @@ curl http://localhost:13000/api/metrics/definitions
 #### `GET /api/alerts/notification-config`
 
 查看邮件通知配置摘要，不返回 SMTP 密码。
+
+#### `POST /api/alerts/notifications/test-email`
+
+发送测试邮件。默认使用 `.env` 中的 `ALERT_EMAIL_TO`，也可以传入 `target` 或 `targets` 覆盖收件人。接口会把测试通知写入 `alert_notifications` 队列，由 `snmp-monitor-notifier` 异步发送。
 
 #### `GET /api/metrics/samples`
 

@@ -203,6 +203,11 @@ export interface AlertNotification {
   updated_at?: string
 }
 
+export interface TestEmailResponse {
+  event: AlertEvent
+  notifications: AlertNotification[]
+}
+
 export interface DiscoveryJob {
   id: string
   cidr: string
@@ -540,6 +545,12 @@ export async function listAlertNotifications(params: Record<string, string | num
 export async function retryAlertNotification(id: string): Promise<AlertNotification> {
   return request(`/api/alerts/notifications/${id}/retry`, {
     method: 'PATCH'
+  })
+}
+
+export async function sendTestEmail(): Promise<TestEmailResponse> {
+  return request('/api/alerts/notifications/test-email', {
+    method: 'POST'
   })
 }
 

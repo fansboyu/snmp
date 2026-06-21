@@ -10,6 +10,7 @@ import {
   listAlertRules,
   retryAlertNotification,
   resolveAlertEvent,
+  sendTestEmail,
   updateAlertRule,
   type AlertEvent,
   type AlertNotification,
@@ -26,6 +27,7 @@ const eventStatus = ref<'active' | 'resolved' | ''>('active')
 const notificationStatus = ref<'all' | 'pending' | 'sending' | 'sent' | 'failed'>('all')
 const resolvingId = ref('')
 const retryingNotificationId = ref('')
+const testingEmail = ref(false)
 const ruleForm = reactive({
   name: '',
   rule_type: 'cpu_threshold',
@@ -94,6 +96,18 @@ async function retryNotification(notification: AlertNotification): Promise<void>
     await loadData()
   } finally {
     retryingNotificationId.value = ''
+  }
+}
+
+async function testEmailNotification(): Promise<void> {
+  testingEmail.value = true
+  try {
+    const result = await sendTestEmail()
+    ElMessage.success(`测试邮件已入队：${result.notifications.length} 封`)
+    notificationStatus.value = 'all'
+    await loadData()
+  } finally {
+    testingEmail.value = false
   }
 }
 
@@ -197,13 +211,16 @@ onMounted(loadData)
       <template #header>
         <div class="card-header-row">
           <span>邮件通知记录</span>
-          <el-select v-model="notificationStatus" placeholder="通知状态" @change="loadData">
-            <el-option label="全部" value="all" />
-            <el-option label="待发送" value="pending" />
-            <el-option label="发送中" value="sending" />
-            <el-option label="已发送" value="sent" />
-            <el-option label="失败" value="failed" />
-          </el-select>
+          <div class="toolbar-actions">
+            <el-select v-model="notificationStatus" placeholder="通知状态" @change="loadData">
+              <el-option label="全部" value="all" />
+              <el-option label="待发送" value="pending" />
+              <el-option label="发送中" value="sending" />
+              <el-option label="已发送" value="sent" />
+              <el-option label="失败" value="failed" />
+            </el-select>
+            <el-button :loading="testingEmail" @click="testEmailNotification">发送测试邮件</el-button>
+          </div>
         </div>
       </template>
       <el-table :data="notifications" row-key="id" empty-text="暂无通知记录">

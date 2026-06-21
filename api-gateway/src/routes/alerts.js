@@ -7,6 +7,7 @@ export async function alertRoutes(app) {
         count(*) filter (where status = 'active' and severity = 'critical')::integer as critical_count,
         count(*) filter (where status = 'active' and severity = 'warning')::integer as warning_count
       from alert_events
+      where title <> '邮件通知测试'
     `)
     return result.rows[0]
   })
@@ -138,6 +139,7 @@ export async function alertRoutes(app) {
         left join device_interfaces i on i.id = e.interface_id
         where ($1::text is null or e.status = $1)
           and ($2::bigint is null or e.device_id = $2)
+          and e.title <> '邮件通知测试'
         order by e.last_seen_at desc, e.triggered_at desc
         limit $3
       `,
@@ -192,6 +194,86 @@ export async function alertRoutes(app) {
     }
   })
 
+  app.post('/notifications/test-email', async (request, reply) => {
+    const body = request.body ?? {}
+    const targets = emailTargets(body.target || body.targets || process.env.ALERT_EMAIL_TO)
+    const smtpHost = String(process.env.SMTP_HOST || '').trim()
+    const smtpFrom = String(process.env.SMTP_FROM || '').trim()
+
+    if (targets.length === 0) {
+      reply.code(400)
+      return { message: 'ALERT_EMAIL_TO or target is required' }
+    }
+    if (!smtpHost || !smtpFrom) {
+      reply.code(400)
+      return { message: 'SMTP_HOST and SMTP_FROM are required before sending a test email' }
+    }
+
+    const subjectPrefix = process.env.ALERT_EMAIL_SUBJECT_PREFIX || '[SNMP Monitor]'
+    const subject = `${subjectPrefix} 邮件通知测试`
+    const message = [
+      '这是一封 SNMP Monitor 测试邮件。',
+      '',
+      `SMTP: ${smtpHost}:${process.env.SMTP_PORT || '587'}`,
+      `From: ${smtpFrom}`,
+      `Time: ${new Date().toISOString()}`,
+      '',
+      '如果你收到这封邮件，说明通知队列和 notifier 容器已经可以正常处理邮件发送。'
+    ].join('\n')
+
+    const client = await app.db.connect()
+    try {
+      await client.query('begin')
+      const event = await client.query(
+        `
+          insert into alert_events (
+            severity,
+            status,
+            title,
+            message,
+            value_text,
+            triggered_at,
+            last_seen_at,
+            resolved_at
+          )
+          values ('info', 'resolved', '邮件通知测试', $1, 'test', now(), now(), now())
+          returning id, severity, status, title, message, value_text, triggered_at, last_seen_at, resolved_at
+        `,
+        [message]
+      )
+
+      const notifications = []
+      for (const target of targets) {
+        const notification = await client.query(
+          `
+            insert into alert_notifications (
+              event_id,
+              channel,
+              target,
+              status,
+              subject,
+              message,
+              next_retry_at,
+              updated_at
+            )
+            values ($1, 'email', $2, 'pending', $3, $4, now(), now())
+            returning id, event_id, channel, target, status, subject, message, error, retry_count, created_at, sent_at, updated_at
+          `,
+          [event.rows[0].id, target, subject, message]
+        )
+        notifications.push(notification.rows[0])
+      }
+      await client.query('commit')
+      reply.code(201)
+      return { event: event.rows[0], notifications }
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  })
+
   app.patch('/notifications/:id/retry', async (request, reply) => {
     const { id } = request.params
     const result = await app.db.query(
@@ -228,4 +310,14 @@ export async function alertRoutes(app) {
     )
     return result.rows[0]
   })
+}
+
+function emailTargets(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean)
+  }
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
 }
