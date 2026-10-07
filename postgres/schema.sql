@@ -94,6 +94,9 @@ create table if not exists device_interfaces (
   if_name text,
   if_alias text,
   oper_status text,
+  admin_status text,
+  speed_bps bigint,
+  user_note text not null default '',
   last_seen_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -485,3 +488,8 @@ on conflict (name) do nothing;
 insert into topology_maps (name, description, is_default)
 values ('默认拓扑', '手动维护的默认网络拓扑', true)
 on conflict (name) do nothing;
+create table if not exists email_notification_config (
+  id integer primary key check (id = 1),
+  config jsonb not null,
+  updated_at timestamptz not null default now()
+);

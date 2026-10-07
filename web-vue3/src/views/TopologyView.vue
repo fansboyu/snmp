@@ -3,12 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowR
 import { Graph, type Cell, type Edge } from '@antv/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { FullScreen } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
+const router = useRouter()
 import {
   createTopologyLink,
   createTopologyNode,
   deleteTopologyLink,
   deleteTopologyNode,
   getDefaultTopology,
+  getPort,
   listDevices,
   listTopologyNeighbors,
   saveTopologyLayout,
@@ -21,6 +24,7 @@ import {
 } from '../services/api'
 
 const loading = ref(false)
+async function openInterface(id:string){try{const port=await getPort(id,'');await router.push(`/devices/${port.device_id}/interfaces/${id}`)}catch(e){ElMessage.error(e instanceof Error?e.message:'无法打开端口')}}
 const saving = ref(false)
 const graphContainer = ref<HTMLDivElement>()
 const topology = ref<TopologyData | null>(null)
@@ -541,7 +545,7 @@ onBeforeUnmount(() => {
               协议：{{ selectedLink.discovery_protocol.toUpperCase() }}
             </div>
             <div v-if="selectedLink.source_interface_name || selectedLink.target_interface_name" class="topology-selected__meta">
-              接口：{{ selectedLink.source_interface_name || '-' }} / {{ selectedLink.target_interface_name || '-' }}
+              接口：<el-button v-if="selectedLink.source_interface_id" type="primary" link @click="openInterface(selectedLink.source_interface_id)">{{selectedLink.source_interface_name||'源端口'}}</el-button><span v-else>—</span> / <el-button v-if="selectedLink.target_interface_id" type="primary" link @click="openInterface(selectedLink.target_interface_id)">{{selectedLink.target_interface_name||'目标端口'}}</el-button><span v-else>—</span>
             </div>
           </template>
           <el-empty v-else description="未选择元素" :image-size="64" />

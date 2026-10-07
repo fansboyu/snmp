@@ -34,7 +34,7 @@ async function submit(): Promise<void> {
     <section class="login-hero">
       <div class="login-brand">
         <div class="login-brand__logo">
-          <img src="/netlooker-logo.png" alt="netlooker logo" />
+          <img src="/netlooker-logo.svg" alt="netlooker 网络数据流标识" width="64" height="64" />
         </div>
         <div>
           <h1>netlooker</h1>

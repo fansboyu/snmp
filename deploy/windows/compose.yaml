@@ -1,38 +1,39 @@
 services:
   postgres:
-    image: postgres:16-alpine
-    container_name: snmp-monitor-postgres
+    image: netlooker/postgres:${IMAGE_VERSION:?Run install.ps1 first}
     environment:
       POSTGRES_DB: snmp_monitor
       POSTGRES_USER: snmp
-      POSTGRES_PASSWORD: snmp
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run install.ps1 first}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./postgres/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
-      - ./postgres/seed.sql:/docker-entrypoint-initdb.d/002-seed.sql:ro
+    - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U snmp -d snmp_monitor"]
+      test:
+      - CMD-SHELL
+      - pg_isready -U snmp -d snmp_monitor
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   api-gateway:
-    build:
-      context: ./api-gateway
-    container_name: snmp-monitor-api
     environment:
       PORT: 3000
       HOST: 0.0.0.0
-      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
-      WEB_ORIGIN: http://localhost:15173
-      JWT_SECRET: ${JWT_SECRET:-snmp-monitor-dev-secret}
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:15173}
+      JWT_SECRET: ${JWT_SECRET:?Run install.ps1 first}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-8h}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Run install.ps1 first}
       ALERT_EMAIL_ENABLED: ${ALERT_EMAIL_ENABLED:-false}
       ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -43,42 +44,51 @@ services:
       SMTP_TLS_MODE: ${SMTP_TLS_MODE:-starttls}
       ALERT_EMAIL_SEND_RESOLVED: ${ALERT_EMAIL_SEND_RESOLVED:-true}
       ALERT_EMAIL_SUBJECT_PREFIX: ${ALERT_EMAIL_SUBJECT_PREFIX:-[SNMP Monitor]}
-    ports:
-      - "13000:3000"
     depends_on:
       postgres:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/api-gateway:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   migrator:
-    build:
-      context: ./api-gateway
-    container_name: snmp-monitor-migrator
-    command: ["node", "src/migrate.js"]
-    restart: "no"
+    command:
+    - node
+    - src/migrate.js
+    restart: 'no'
     environment:
-      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
       MIGRATION_BASELINE_SQL: /app/schema.sql
       MIGRATIONS_DIR: /app/migrations
     volumes:
-      - ./postgres/schema.sql:/app/schema.sql:ro
-      - ./postgres/migrations:/app/migrations:ro
+    - ./postgres/schema.sql:/app/schema.sql:ro
+    - ./postgres/migrations:/app/migrations:ro
     depends_on:
       postgres:
         condition: service_healthy
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/migrator:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   collector-go:
-    build:
-      context: ./collector-go
-    container_name: snmp-monitor-collector
     environment:
-      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
-      COLLECT_INTERVAL_SECONDS: 60
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
+      COLLECT_INTERVAL_SECONDS: ${COLLECT_INTERVAL_SECONDS:-60}
       DEVICE_COLLECT_TIMEOUT_SECONDS: ${DEVICE_COLLECT_TIMEOUT_SECONDS:-45}
       NEIGHBOR_INTERVAL_SECONDS: ${NEIGHBOR_INTERVAL_SECONDS:-600}
       NEIGHBOR_TIMEOUT_SECONDS: ${NEIGHBOR_TIMEOUT_SECONDS:-15}
@@ -99,7 +109,7 @@ services:
       ROLLUP_LOOKBACK_SECONDS: ${ROLLUP_LOOKBACK_SECONDS:-900}
       SNMP_TIMEOUT_SECONDS: 3
       SNMP_RETRIES: 1
-      WORKER_COUNT: 16
+      WORKER_COUNT: ${WORKER_COUNT:-16}
       GETBULK_MAX_REPETITIONS: 25
       STORAGE_GUARD_PATH: /postgres-data
       STORAGE_GUARD_WARNING_USED_PERCENT: ${STORAGE_GUARD_WARNING_USED_PERCENT:-85}
@@ -119,22 +129,26 @@ services:
       ALERT_EMAIL_SEND_RESOLVED: ${ALERT_EMAIL_SEND_RESOLVED:-true}
       ALERT_EMAIL_SUBJECT_PREFIX: ${ALERT_EMAIL_SUBJECT_PREFIX:-[SNMP Monitor]}
     volumes:
-      - postgres-data:/postgres-data:ro
+    - postgres-data:/postgres-data:ro
     depends_on:
       postgres:
         condition: service_healthy
       migrator:
         condition: service_completed_successfully
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/collector-go:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   discovery-worker:
-    build:
-      context: ./collector-go
-      dockerfile: Dockerfile.discovery
-    container_name: snmp-monitor-discovery-worker
     environment:
-      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
       DISCOVERY_POLL_INTERVAL_SECONDS: 5
       DISCOVERY_STALE_RUNNING_SECONDS: 1800
     depends_on:
@@ -143,16 +157,20 @@ services:
       migrator:
         condition: service_completed_successfully
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/discovery-worker:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   notifier:
-    build:
-      context: ./collector-go
-      dockerfile: Dockerfile.notifier
-    container_name: snmp-monitor-notifier
     environment:
-      JWT_SECRET: ${JWT_SECRET:-snmp-monitor-dev-secret}
-      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:?Run install.ps1 first}
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USERNAME: ${SMTP_USERNAME:-}
@@ -169,22 +187,35 @@ services:
       migrator:
         condition: service_completed_successfully
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/notifier:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   web-vue3:
-    build:
-      context: ./web-vue3
-    container_name: snmp-monitor-web
     ports:
-      - "15173:80"
+    - ${HOST_BIND:-0.0.0.0}:${WEB_PORT:-15173}:80
     depends_on:
-      - api-gateway
+    - api-gateway
     networks:
-      - snmp-monitor-net
-
+    - snmp-monitor-net
+    image: netlooker/web-vue3:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
 volumes:
-  postgres-data:
-
+  postgres-data: null
 networks:
   snmp-monitor-net:
     driver: bridge
+name: ${COMPOSE_PROJECT_NAME:-netlooker}

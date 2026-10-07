@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"snmp-monitor/collector-go/internal/collector"
+	"snmp-monitor/collector-go/internal/mailconfig"
 )
 
 type Store interface {
+	LoadMailConfig(context.Context) (*mailconfig.Config, error)
 	ResetStaleSendingNotifications(context.Context, time.Duration) error
 	ClaimPendingNotifications(context.Context, int) ([]collector.AlertNotification, error)
 	MarkNotificationSent(context.Context, int64) error
@@ -32,6 +34,7 @@ type SMTPConfig struct {
 }
 
 type Service struct {
+	ConfigSecret      string
 	Store             Store
 	SMTP              SMTPConfig
 	PollInterval      time.Duration
@@ -62,6 +65,17 @@ func (service Service) Run(ctx context.Context) error {
 }
 
 func (service Service) processOnce(ctx context.Context) error {
+	config, err := service.Store.LoadMailConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("load email config: %w", err)
+	}
+	if config != nil {
+		password, err := config.Password(service.ConfigSecret)
+		if err != nil {
+			return err
+		}
+		service.SMTP = SMTPConfig{Host: config.SMTPHost, Port: config.SMTPPort, Username: config.SMTPUsername, Password: password, From: config.SMTPFrom, TLSMode: config.SMTPTLSMode, Timeout: service.SMTP.Timeout}
+	}
 	notifications, err := service.Store.ClaimPendingNotifications(ctx, service.batchSize())
 	if err != nil {
 		return err

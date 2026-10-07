@@ -23,7 +23,7 @@ const authStore = useAuthStore()
 const sidebarCollapsed = ref(false)
 const passwordDialogVisible = ref(false)
 const passwordSaving = ref(false)
-const activeMenu = computed(() => route.path)
+const activeMenu = computed(() => route.path.startsWith('/devices/') ? '/devices' : route.path)
 const asideWidth = computed(() => (sidebarCollapsed.value ? '76px' : '232px'))
 
 const passwordForm = reactive({
@@ -69,11 +69,11 @@ async function changePassword(): Promise<void> {
     <el-aside :width="asideWidth" class="app-sidebar">
       <div class="brand">
         <div class="brand__logo">
-          <img src="/netlooker-logo.png" alt="netlooker logo" />
+          <img src="/netlooker-logo.svg" alt="netlooker 网络数据流标识" width="44" height="44" />
         </div>
         <div class="brand__text">
           <div class="brand__name">netlooker</div>
-          <div class="brand__sub">Network monitoring console</div>
+          <div class="brand__sub">NETWORK OBSERVABILITY</div>
         </div>
       </div>
 

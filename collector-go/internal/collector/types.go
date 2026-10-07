@@ -47,13 +47,17 @@ type MetricSample struct {
 }
 
 type InterfaceInfo struct {
-	DeviceID   int64
-	IfIndex    int
-	IfDescr    string
-	IfName     string
-	IfAlias    string
-	OperStatus string
-	LastSeenAt time.Time
+	AdminStatus string
+	SpeedBps    *int64
+	HasName     bool
+	HasAlias    bool
+	DeviceID    int64
+	IfIndex     int
+	IfDescr     string
+	IfName      string
+	IfAlias     string
+	OperStatus  string
+	LastSeenAt  time.Time
 }
 
 type InterfaceMetricSample struct {

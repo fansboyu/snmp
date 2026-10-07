@@ -1,8 +1,22 @@
-﻿# SNMP Monitoring Platform
+# SNMP Monitoring Platform
+
+当前正式版本：**v1.6.0**。本版增加独立端口流量详情、设备页三列关注端口、界面邮件配置、设备独立采集调度和 Windows 离线发布工具。完整变更与升级说明见 [v1.6.0 发布说明](docs/releases/v1.6.0.md)。
 
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
 
 ## 技术栈
+
+### 独立端口流量详情
+
+设备详情的端口列表支持搜索、分页、批量流量摘要，点击端口进入 `/devices/:deviceId/interfaces/:interfaceId`。告警端口和拓扑链路的明确端口关联也可跳转。详情页支持端口切换、浏览器本地关注、独立业务备注、1h/6h/24h 和最多 7 天的自定义查询、方向利用率、当前采样时间及相关告警；可每 60 秒自动刷新，离开页面时取消请求和计时器。
+
+新增 `GET /api/interfaces/:id`、`GET /api/interfaces/:id/traffic-summary`、`GET /api/interfaces/:id/traffic`、`PATCH /api/interfaces/:id/note`。GET 支持 `deviceId` 校验归属；traffic 支持 `range` 或 ISO `start/end`。接口列表可用 `metadataOnly=true` 只读取端口元信息。告警事件可按 `interfaceId` 筛选。
+
+`006_port_detail.sql` 增量补齐端口名称、设备备注、管理状态、速率、64 位计数器、计数器重置标识和错误/丢弃指标，绑定内置通用与华为模板。自定义模板可在指标管理中按需绑定这些指标。用户备注保存在 `user_note`，不会被 SNMP 备注覆盖。
+
+列表、详情和现有流量图查询复用统一计算：使用实际采样时差，优先 64 位计数器并保留整数精度；32 位仅在已知速率与采样间隔可排除多次回绕时计算。计数器重置、数据源切换、间隔超过 180 秒及不合理速率产生断点。超过 3 分钟的样本标为过期，当前值为 null。利用率按入/出方向分别计算，速率未知时不显示利用率。均值按有效覆盖时间加权，峰值取原始有效采样速率；趋势超过 600 点才降采样，统计先于降采样计算。当前使用原始样本查询（默认接口保留 15 天），不把计数器 rollup 的末值当作速率峰值。错误和丢弃指标采集后保留在接口样本中，当前详情未将它们转换为告警规则。
+
+采集器会先探测设备 SNMP 可达性，无响应设备不继续遍历各列。设备端口类型和 ifIndex 在设备重置后可能变化，应核对身份和新采样；端口不存在时返回 404。
 
 - **采集引擎**：Go + `gosnmp`
 - **API 网关**：Node.js + Fastify
@@ -30,11 +44,12 @@ Linux 服务器首次部署、备份、版本升级和回滚的完整说明见�
 
 - [`docs/linux-deployment-and-upgrade.md`](docs/linux-deployment-and-upgrade.md)
 
-仓库根目录已内置默认 `.env`，克隆后可直接构建启动；生产环境建议至少修改 `JWT_SECRET` 和首次初始化用的 `ADMIN_PASSWORD`。
+仓库提供 `.env.example` 开发配置示例，首次克隆后复制为 `.env`；`.env` 不纳入版本控制。生产环境请设置独立的 `JWT_SECRET` 和首次初始化用的 `ADMIN_PASSWORD`。已有部署应保留原 `.env`，尤其是用于邮件密码解密的 JWT 密钥。
 
 首次启动时，系统会使用 `.env` 中的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 初始化数据库管理员账号。初始化完成后，管理员密码保存在 PostgreSQL 的 `admin_users` 表中，可在页面左下角“修改密码”入口修改；后续修改 `.env` 中的 `ADMIN_PASSWORD` 不会覆盖已经存在的数据库管理员密码。
 
 ```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 docker compose up -d --build
 ```
 
@@ -76,7 +91,7 @@ docker compose down -v
 docker exec snmp-monitor-postgres pg_dump -U snmp -d snmp_monitor > snmp_monitor_backup.sql
 docker compose down
 git fetch --tags
-git checkout v1.5.5
+git checkout v1.6.0
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -240,6 +255,12 @@ Go SNMP 采集器容器。
 | --- | --- | --- |
 | `DATABASE_URL` | `postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable` | 数据库连接地址 |
 | `COLLECT_INTERVAL_SECONDS` | `60` | 采集周期，单位秒 |
+| `DEVICE_COLLECT_TIMEOUT_SECONDS` | `45` | 单设备快速任务总预算，含模板读取、SNMP、保存和告警；网络阶段预留最多 5 秒供保存使用 |
+| `NEIGHBOR_INTERVAL_SECONDS` | `600` | LLDP/CDP 邻居低频采集周期 |
+| `NEIGHBOR_TIMEOUT_SECONDS` | `15` | 邻居任务总预算 |
+| `DEVICE_REFRESH_SECONDS` | `5` | 启用设备及连接配置刷新周期 |
+| `DATABASE_TIMEOUT_SECONDS` | `10` | 设备目录读取超时 |
+| `MAINTENANCE_TIMEOUT_SECONDS` | `120` | 每次存储保护检查、聚合或清理的耗时上限 |
 | `CLEANUP_INTERVAL_SECONDS` | `3600` | 历史数据清理周期，单位秒；小于等于 `0` 表示关闭 |
 | `METRIC_SAMPLE_RETENTION_DAYS` | `30` | 标量样本保留天数；小于等于 `0` 表示不清理 |
 | `INTERFACE_SAMPLE_RETENTION_DAYS` | `30` | 接口样本保留天数；小于等于 `0` 表示不清理 |
@@ -271,16 +292,18 @@ Go SNMP 采集器容器。
 
 **当前采集逻辑**
 
-1. 启动后立即执行一次采集。
-2. 按 `COLLECT_INTERVAL_SECONDS` 周期循环采集。
+1. 启动固定工作池，每台启用设备按稳定偏移在首个采集周期内启动，避免集中请求。
+2. 每台设备独立安排 `COLLECT_INTERVAL_SECONDS` 周期；慢设备不阻塞整批，过期时间槽跳过，不补采历史。
 3. 查询 `devices.enabled = true` 的设备。
 4. 按设备分组加载绑定的 OID 模板。
 5. 标量指标执行 SNMP `Get`，通用 Walk 指标按聚合方式写入单个样本，接口表指标优先执行 SNMP `BulkWalk`，失败时回退到 `Walk`。
 6. 写入 `metric_samples`、`device_interfaces` 和 `interface_metric_samples`。
 7. 根据 CPU 阈值和接口 Down 规则生成或恢复告警事件。
 8. 邮件通知启用时，告警首次触发和恢复会写入 `alert_notifications` 队列。
-9. 按保留策略定时分批清理历史样本、已恢复告警、通知记录和自动发现历史。
-10. 检测到数据库数据卷磁盘高水位时，先执行紧急旧数据清理；达到只读保护阈值后暂停本轮采集写入，避免继续压垮 PostgreSQL。
+9. 独立维护循环负责存储检查、聚合和分批清理，与采集调度并行；维护任务之间串行且有超时。
+10. 流量样本保存后，另行低频采集 LLDP/CDP 邻居。同一设备最多一个执行任务，无无界队列；快速任务优先使用工作池。端口名称、别名、状态和带宽仍随快速任务刷新，保证容量变化及时可见。
+11. 失败设备按 2/4/8 倍周期退避，成功后恢复正常周期。设备删除、停用或连接配置变更时取消在途任务，配置变更在旧任务实际结束后再启动新任务。
+12. 检测到数据库数据卷磁盘高水位时，先执行紧急旧数据清理；达到只读保护阈值后暂停本轮采集写入，避免继续压垮 PostgreSQL。
 
 > 默认不包含内置 SNMP Agent 容器。请先在 `devices` 中添加你自己的 SNMP 设备，采集器才会开始产生样本。
 
@@ -812,11 +835,21 @@ curl http://localhost:13000/api/metrics/definitions
 
 #### `GET /api/alerts/notification-config`
 
-查看邮件通知配置摘要，不返回 SMTP 密码。
+查看邮件通知配置，包括启用开关、SMTP 地址/端口/加密方式、账号、发件邮箱、收件邮箱、主题前缀和恢复通知。只返回密码是否已配置，不返回密码或密文。
+
+#### `PATCH /api/alerts/notification-config`
+
+管理员可在“告警中心”顶部或“邮件通知记录”旁点击“邮件配置”，填写后保存。支持 STARTTLS（通常 587）、SSL/TLS（通常 465）和内部服务器不加密模式；邮箱服务通常使用 SMTP 授权码。收件邮箱支持多个，使用换行、逗号或分号分隔。
+
+配置保存在 PostgreSQL 的 `email_notification_config` 表，由 `005_email_notification_config.sql` 增量迁移创建。尚未在页面保存时沿用环境变量；首次保存后数据库配置优先。采集器产生通知时读取新配置，notifier 每次轮询读取 SMTP 配置，无需重启容器。关闭通知开关会停止生成新的告警邮件，已经入队的邮件和手动测试邮件仍会发送。
+
+密码使用 AES-256-GCM 加密保存，API 和 notifier 使用相同的 `JWT_SECRET` 派生密钥。页面密码留空时保留原值；勾选“清除已保存的密码”时清除，输入新授权码时替换。更换 `JWT_SECRET` 后需要在页面重新填写授权码。配置 API 使用现有 JWT 登录保护。
+
+“保存并发送测试邮件”会先保存当前表单，再加入邮件队列；入队成功不代表投递成功，最终结果和错误可在“邮件通知记录”查看。本地配置入口不会自动发送邮件。
 
 #### `POST /api/alerts/notifications/test-email`
 
-发送测试邮件。默认使用 `.env` 中的 `ALERT_EMAIL_TO`，也可以传入 `target` 或 `targets` 覆盖收件人。接口会把测试通知写入 `alert_notifications` 队列，由 `snmp-monitor-notifier` 异步发送。
+发送测试邮件。默认使用页面保存的收件邮箱，未保存时使用 `.env` 中的 `ALERT_EMAIL_TO`，也可以传入 `target` 或 `targets` 覆盖收件人。接口会把测试通知写入 `alert_notifications` 队列，由 `snmp-monitor-notifier` 异步发送。
 
 #### `GET /api/metrics/samples`
 
@@ -1122,6 +1155,16 @@ go run .
 
 ## 当前限制与后续建议
 
+### Windows 离线发布包
+
+设备详情页增加“关注端口”三列卡片区，位于 CPU、内存和接口状态图下方。卡片展示业务备注、当前入/出速率、利用率、最近一小时迷你趋势与数据状态，点击进入现有端口详情，星标取消关注；可通过“选择关注端口”搜索并批量选择，全部端口表也提供关注按钮。关注记录沿用浏览器 `netlooker-port-favorites`，详情页、列表和卡片共享响应式状态，同一设备只展示属于它的端口，其他设备的关注记录保留。当前仍是浏览器本地收藏，不随账号跨电脑同步。
+
+设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
+
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.0` 构建并导出当前项目的七个运行镜像，生成 `releases/netlooker-1.6.0-windows-amd64.zip`。该版本包含设备页原位三列关注端口，此前 2026.10.07.1 / 2026.10.07.2 本地预发布包保留。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+
+目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
+
 当前项目是可运行骨架，适合继续扩展。
 
 建议后续增强：
@@ -1131,3 +1174,12 @@ go run .
 - 采集器增加 `GetBulk`、批量写入、失败重试记录
 - PostgreSQL 指标样本表增加时间分区或 TimescaleDB
 - 前端增加趋势图、告警中心、任务状态和采集器节点状态
+
+
+### 设备独立调度的运行说明
+
+品牌标识采用 `web-vue3/public/netlooker-logo.svg`：切角工业外框、蓝青色 N 形网络线路和数据包标记。侧栏、登录页及浏览器图标共用 SVG，在不同尺寸保持清晰；旧 PNG 保留供历史引用。品牌副标题改为 `NETWORK OBSERVABILITY`，适配侧栏宽度。
+
+运行 `docker compose up -d --build collector-go` 即可更新采集器，不增加容器，不变更数据库结构。使用 `docker compose logs --tail=100 collector-go` 查看 `scheduler started` 和 `collection finished`，后者包含设备 ID、是否邻居任务、成功状态和耗时。其他服务保持原有部署方式。
+
+时间预算是上限，实际安全退出依赖 SNMP 和数据库调用遵循 context；SNMP 客户端已绑定任务 context。网络超时后可以保存已完成的部分样本，但任务仍视为失败并退避。存储保护和紧急清理只有一个维护循环持有状态。周期与并发数应按设备规模及实际 Walk 耗时调整；当前仍是单采集器实例，不支持多个采集器抢占同一设备。

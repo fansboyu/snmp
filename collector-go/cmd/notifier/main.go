@@ -24,7 +24,8 @@ func main() {
 	defer db.Close()
 
 	service := notifier.Service{
-		Store: db,
+		ConfigSecret: env("JWT_SECRET", "snmp-monitor-dev-secret"),
+		Store:        db,
 		SMTP: notifier.SMTPConfig{
 			Host:     env("SMTP_HOST", ""),
 			Port:     intEnv("SMTP_PORT", 587),

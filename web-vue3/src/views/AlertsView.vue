@@ -2,6 +2,9 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import MetricCard from '../components/MetricCard.vue'
+import EmailConfigDialog from '../components/EmailConfigDialog.vue'
+import { useRouter } from 'vue-router'
+const router = useRouter()
 import {
   createAlertRule,
   getAlertSummary,
@@ -28,6 +31,7 @@ const notificationStatus = ref<'all' | 'pending' | 'sending' | 'sent' | 'failed'
 const resolvingId = ref('')
 const retryingNotificationId = ref('')
 const testingEmail = ref(false)
+const emailConfigVisible = ref(false)
 const ruleForm = reactive({
   name: '',
   rule_type: 'cpu_threshold',
@@ -106,6 +110,8 @@ async function testEmailNotification(): Promise<void> {
     ElMessage.success(`测试邮件已入队：${result.notifications.length} 封`)
     notificationStatus.value = 'all'
     await loadData()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '发送测试邮件失败，请检查邮件配置')
   } finally {
     testingEmail.value = false
   }
@@ -145,6 +151,7 @@ onMounted(loadData)
     <div class="page-toolbar">
       <h2 class="page-title">告警中心</h2>
       <div class="toolbar-actions">
+        <el-button @click="emailConfigVisible = true">邮件配置</el-button>
         <el-select v-model="eventStatus" placeholder="事件状态" @change="loadData">
           <el-option label="当前告警" value="active" />
           <el-option label="历史恢复" value="resolved" />
@@ -185,7 +192,7 @@ onMounted(loadData)
         <el-table-column prop="title" label="标题" min-width="160" />
         <el-table-column prop="device_name" label="设备" min-width="150" />
         <el-table-column prop="interface_name" label="接口" min-width="140">
-          <template #default="{ row }">{{ row.interface_name || '-' }}</template>
+          <template #default="{ row }"><el-button v-if="row.interface_id && row.device_id" type="primary" link @click="router.push(`/devices/${row.device_id}/interfaces/${row.interface_id}`)">{{ row.interface_name || '查看端口' }}</el-button><span v-else>—</span></template>
         </el-table-column>
         <el-table-column prop="message" label="详情" min-width="260" show-overflow-tooltip />
         <el-table-column prop="last_seen_at" label="最近触发" width="220" />
@@ -220,6 +227,7 @@ onMounted(loadData)
               <el-option label="失败" value="failed" />
             </el-select>
             <el-button :loading="testingEmail" @click="testEmailNotification">发送测试邮件</el-button>
+            <el-button @click="emailConfigVisible = true">邮件配置</el-button>
           </div>
         </div>
       </template>
@@ -330,5 +338,6 @@ onMounted(loadData)
         </el-card>
       </el-col>
     </el-row>
+    <EmailConfigDialog v-model="emailConfigVisible" @tested="loadData" />
   </div>
 </template>

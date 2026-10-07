@@ -73,8 +73,8 @@ const trafficChartOptions = computed<EChartsOption>(() => ({
   xAxis: { type: 'category', boundaryGap: false, data: trafficSeries.value.map((point) => formatTime(point.time)) },
   yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatBps(value) } },
   series: [
-    { name: '入流量', type: 'line', smooth: true, data: trafficSeries.value.map((point) => point.in_bps ?? 0) },
-    { name: '出流量', type: 'line', smooth: true, data: trafficSeries.value.map((point) => point.out_bps ?? 0) }
+    { name: '入流量', type: 'line', smooth: true, data: trafficSeries.value.map((point) => point.in_bps ?? null) },
+    { name: '出流量', type: 'line', smooth: true, data: trafficSeries.value.map((point) => point.out_bps ?? null) }
   ]
 }))
 

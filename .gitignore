@@ -7,6 +7,7 @@ build/
 coverage/
 
 # Environment files
+.env
 .env.local
 .env.*.local
 
@@ -29,8 +30,10 @@ Thumbs.db
 .vscode/
 
 # Local working notes / generated artifacts
+deliverables/
 AGENTS.md
 backups/
+releases/
 design-mockups/
 原则.txt
 原则.txt.bak

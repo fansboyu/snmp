@@ -1,3 +1,5 @@
+import { emailTargets, loadMailConfig, publicMailConfig, updatedMailConfig, mailConfigSchema } from '../mail-config.js'
+
 export async function alertRoutes(app) {
   app.get('/summary', async () => {
     const result = await app.db.query(`
@@ -114,6 +116,7 @@ export async function alertRoutes(app) {
   app.get('/events', async (request) => {
     const status = request.query.status
     const deviceId = request.query.deviceId
+    const interfaceId = request.query.interfaceId
     const limit = Number(request.query.limit ?? 200)
     const result = await app.db.query(
       `
@@ -140,10 +143,11 @@ export async function alertRoutes(app) {
         where ($1::text is null or e.status = $1)
           and ($2::bigint is null or e.device_id = $2)
           and e.title <> '邮件通知测试'
+          and ($4::bigint is null or e.interface_id = $4)
         order by e.last_seen_at desc, e.triggered_at desc
         limit $3
       `,
-      [status ?? null, deviceId ?? null, limit]
+      [status ?? null, deviceId ?? null, limit, interfaceId ?? null]
     )
     return result.rows
   })
@@ -185,36 +189,49 @@ export async function alertRoutes(app) {
   })
 
   app.get('/notification-config', async () => {
-    return {
-      emailEnabled: process.env.ALERT_EMAIL_ENABLED === 'true',
-      smtpHost: process.env.SMTP_HOST || '',
-      smtpPort: process.env.SMTP_PORT || '',
-      smtpFrom: process.env.SMTP_FROM || '',
-      emailToConfigured: Boolean(process.env.ALERT_EMAIL_TO)
+    return publicMailConfig(await loadMailConfig(app))
+  })
+
+  app.patch('/notification-config', { schema: mailConfigSchema }, async (request, reply) => {
+    const current = await loadMailConfig(app)
+    let config
+    try {
+      config = updatedMailConfig(current, request.body, app.config.JWT_SECRET)
+    } catch (error) {
+      return reply.code(400).send({ message: error.message })
     }
+    await app.db.query(`
+      insert into email_notification_config (id, config) values (1, $1::jsonb)
+      on conflict (id) do update set config = excluded.config, updated_at = now()
+    `, [JSON.stringify(config)])
+    return publicMailConfig({ ...config, source: 'database' })
   })
 
   app.post('/notifications/test-email', async (request, reply) => {
     const body = request.body ?? {}
-    const targets = emailTargets(body.target || body.targets || process.env.ALERT_EMAIL_TO)
-    const smtpHost = String(process.env.SMTP_HOST || '').trim()
-    const smtpFrom = String(process.env.SMTP_FROM || '').trim()
+    const config = await loadMailConfig(app)
+    const targets = emailTargets(body.target || body.targets || config.emailTo)
+    const smtpHost = config.smtpHost.trim()
+    const smtpFrom = config.smtpFrom.trim()
 
     if (targets.length === 0) {
       reply.code(400)
-      return { message: 'ALERT_EMAIL_TO or target is required' }
+      return { message: '请先在邮件配置中填写收件邮箱' }
+    }
+    if (targets.length > 100 || targets.some(target => !/^[^\s@<>;,]+@[^\s@<>;,]+\.[^\s@<>;,]+$/.test(target))) {
+      return reply.code(400).send({ message: '请输入有效的测试收件邮箱，最多 100 个' })
     }
     if (!smtpHost || !smtpFrom) {
       reply.code(400)
-      return { message: 'SMTP_HOST and SMTP_FROM are required before sending a test email' }
+      return { message: '请先保存 SMTP 地址和发件邮箱' }
     }
 
-    const subjectPrefix = process.env.ALERT_EMAIL_SUBJECT_PREFIX || '[SNMP Monitor]'
+    const subjectPrefix = config.subjectPrefix
     const subject = `${subjectPrefix} 邮件通知测试`
     const message = [
       '这是一封 SNMP Monitor 测试邮件。',
       '',
-      `SMTP: ${smtpHost}:${process.env.SMTP_PORT || '587'}`,
+      `SMTP: ${smtpHost}:${config.smtpPort}`,
       `From: ${smtpFrom}`,
       `Time: ${new Date().toISOString()}`,
       '',
@@ -310,14 +327,4 @@ export async function alertRoutes(app) {
     )
     return result.rows[0]
   })
-}
-
-function emailTargets(value) {
-  if (Array.isArray(value)) {
-    return value.map((item) => String(item).trim()).filter(Boolean)
-  }
-  return String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
 }

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" fill="none">
+  <title>netlooker — 网络数据流</title>
+  <defs>
+    <linearGradient id="housing" x1="16" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#40566D"/>
+      <stop offset=".44" stop-color="#14283D"/>
+      <stop offset="1" stop-color="#071322"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="12" y1="8" x2="116" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A1B9CB"/>
+      <stop offset=".45" stop-color="#46627A"/>
+      <stop offset="1" stop-color="#20354C"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="34" y1="36" x2="96" y2="92" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#64F4DF"/>
+      <stop offset=".46" stop-color="#25C8ED"/>
+      <stop offset="1" stop-color="#4F83FF"/>
+    </linearGradient>
+  </defs>
+  <!-- Chamfered enclosure, with a bright upper edge and recessed face. -->
+  <path d="M26 8H102L120 26V102L102 120H26L8 102V26L26 8Z" fill="url(#housing)" stroke="url(#edge)" stroke-width="2"/>
+  <path d="M29 17H99L111 29V99L99 111H29L17 99V29L29 17Z" fill="#0A1B2D" stroke="#36506A" stroke-width="1.5"/>
+  <path d="M30 17H78" stroke="#67DBED" stroke-width="2"/>
+  <path d="M48 111H98L111 98" stroke="#060F1B" stroke-width="2"/>
+  <!-- Twin rails give the N the character of a network backplane. -->
+  <path d="M36 88V40L92 88V40" stroke="#030C16" stroke-width="17" stroke-linejoin="bevel"/>
+  <path d="M36 88V40L92 88V40" stroke="url(#flow)" stroke-width="10" stroke-linejoin="bevel"/>
+  <path d="M36 80V48M44 47L84 81M92 80V48" stroke="#B7FBFF" stroke-opacity=".55" stroke-width="1.5"/>
+  <!-- Packet accents follow the diagonal transmission direction. -->
+  <path d="M52 54L59 60" stroke="#D7FFFF" stroke-width="5"/>
+  <path d="M68 68L75 74" stroke="#D7FFFF" stroke-width="5"/>
+  <!-- Four terminal blocks stay legible at small sizes. -->
+  <g fill="#0B2337" stroke="#65E7F3" stroke-width="2">
+    <path d="M30 33H42L45 36V44L42 47H30L27 44V36L30 33Z"/>
+    <path d="M30 81H42L45 84V92L42 95H30L27 92V84L30 81Z"/>
+    <path d="M86 33H98L101 36V44L98 47H86L83 44V36L86 33Z"/>
+    <path d="M86 81H98L101 84V92L98 95H86L83 92V84L86 81Z"/>
+  </g>
+  <g fill="#B7FAFF">
+    <path d="M33 37H39V43H33Z"/><path d="M33 85H39V91H33Z"/>
+    <path d="M89 37H95V43H89Z"/><path d="M89 85H95V91H89Z"/>
+  </g>
+  <path d="M57 100H64M68 100H75" stroke="#4C708E" stroke-width="2"/>
+  <path d="M82 100H90" stroke="#F4B75F" stroke-width="2"/>
+</svg>

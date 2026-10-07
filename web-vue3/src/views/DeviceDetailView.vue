@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { EChartsOption } from 'echarts'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import EChartCard from '../components/EChartCard.vue'
 import MetricCard from '../components/MetricCard.vue'
+import FollowedPortCard from '../components/FollowedPortCard.vue'
+import { StarFilled, Plus } from '@element-plus/icons-vue'
+import { usePortFavorites } from '../services/port-favorites'
+import { formatRate, localTime, dataStatusNames } from '../services/traffic-format'
 import {
   getCollectionTrendChart,
   getCpuChart,
   getInterfaceStatusChart,
-  getInterfaceTrafficChart,
   getMemoryChart,
+  getPortTraffic,
   listDevices,
   listInterfaces,
   listMetricSamples,
@@ -18,13 +22,9 @@ import {
   type Device,
   type DeviceInterface,
   type InterfaceStatusPoint,
-  type MetricSample
+  type MetricSample,
+  type PortTrafficResult
 } from '../services/api'
-
-interface InterfaceTraffic {
-  iface: DeviceInterface
-  points: ChartPoint[]
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -37,7 +37,27 @@ const cpuSeries = ref<ChartPoint[]>([])
 const memorySeries = ref<ChartPoint[]>([])
 const statusSeries = ref<InterfaceStatusPoint[]>([])
 const trendSeries = ref<ChartPoint[]>([])
-const interfaceTraffic = ref<InterfaceTraffic[]>([])
+const interfaceKeyword = ref('')
+const interfacePage = ref(1)
+const favorites = usePortFavorites()
+const followedPorts = computed(() => interfaces.value.filter(port => favorites.ids.value.includes(String(port.id))))
+const followedTraffic = ref<Record<string, PortTrafficResult>>({})
+const followedErrors = ref<Record<string, string>>({})
+const followedLoading = ref<string[]>([])
+const pickerVisible = ref(false)
+const pickerKeyword = ref('')
+const selectedPorts = ref<string[]>([])
+const selectablePorts = computed(() => interfaces.value.filter(port => `${interfaceLabel(port)} ${port.user_note || ''} ${port.if_alias || ''}`.toLowerCase().includes(pickerKeyword.value.toLowerCase())))
+const diagnosticPanels = ref<string[]>([])
+const diagnosticLoading = ref(false)
+let dataSequence = 0
+let trafficSequence = 0
+let diagnosticSequence = 0
+let trafficController: AbortController | undefined
+let disposed = false
+const followSignature = () => `${deviceId.value}:${followedPorts.value.map(port => String(port.id)).join(',')}`
+const matchingInterfaces = computed(() => interfaces.value.filter(i => `${i.if_name} ${i.if_descr} ${i.if_alias} ${i.user_note}`.toLowerCase().includes(interfaceKeyword.value.toLowerCase())))
+const pagedInterfaces = computed(() => matchingInterfaces.value.slice((interfacePage.value-1)*15,interfacePage.value*15))
 
 const upCount = computed(() => statusCount('up'))
 const downCount = computed(() => statusCount('down'))
@@ -55,7 +75,7 @@ const cpuChartOptions = computed<EChartsOption>(() => ({
     smooth: true,
     symbolSize: 6,
     areaStyle: { color: 'rgba(37, 99, 235, 0.16)' },
-    data: cpuSeries.value.map((point) => point.value ?? 0)
+    data: cpuSeries.value.map((point) => point.value ?? null)
   }]
 }))
 
@@ -71,7 +91,7 @@ const memoryChartOptions = computed<EChartsOption>(() => ({
     smooth: true,
     symbolSize: 6,
     areaStyle: { color: 'rgba(15, 118, 110, 0.16)' },
-    data: memorySeries.value.map((point) => point.value ?? 0)
+    data: memorySeries.value.map((point) => point.value ?? null)
   }]
 }))
 
@@ -102,51 +122,95 @@ const trendChartOptions = computed<EChartsOption>(() => ({
 }))
 
 async function loadData(): Promise<void> {
+  const sequence = ++dataSequence
+  const id = deviceId.value
   loading.value = true
   try {
-    const [deviceResult, interfaceResult, sampleResult, cpuResult, memoryResult, statusResult, trendResult] = await Promise.all([
+    const [deviceResult, interfaceResult, cpuResult, memoryResult, statusResult] = await Promise.all([
       listDevices(),
-      listInterfaces({ deviceId: deviceId.value }),
-      listMetricSamples({ deviceId: deviceId.value, limit: 8 }),
-      getCpuChart({ deviceId: deviceId.value, range: '1h' }),
-      getMemoryChart({ deviceId: deviceId.value, range: '1h' }),
-      getInterfaceStatusChart({ deviceId: deviceId.value }),
-      getCollectionTrendChart({ deviceId: deviceId.value, range: '1h' })
+      listInterfaces({ deviceId: id }),
+      getCpuChart({ deviceId: id, range: '1h' }),
+      getMemoryChart({ deviceId: id, range: '1h' }),
+      getInterfaceStatusChart({ deviceId: id })
     ])
-    device.value = deviceResult.find((item) => String(item.id) === deviceId.value) ?? null
+    if (disposed || sequence !== dataSequence) return
+    const oldSignature = followSignature()
+    device.value = deviceResult.find((item) => String(item.id) === id) ?? null
     interfaces.value = interfaceResult
-    samples.value = sampleResult
     cpuSeries.value = cpuResult
     memorySeries.value = memoryResult
     statusSeries.value = statusResult
-    trendSeries.value = trendResult
-    interfaceTraffic.value = await Promise.all(
-      interfaceResult.map(async (iface) => ({
-        iface,
-        points: await getInterfaceTrafficChart({ deviceId: deviceId.value, interfaceId: iface.id, range: '1h' })
-      }))
-    )
+    // The watcher handles membership changes; refresh unchanged memberships here.
+    if (oldSignature === followSignature()) void loadFollowedTraffic()
+    if (diagnosticPanels.value.includes('collection')) void loadDiagnostics()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '加载设备监控失败')
+    if (!disposed && sequence === dataSequence) ElMessage.error(error instanceof Error ? error.message : '加载设备监控失败')
   } finally {
-    loading.value = false
+    if (sequence === dataSequence) loading.value = false
   }
 }
 
-function trafficOptions(points: ChartPoint[]): EChartsOption {
-  return {
-    color: ['#16a34a', '#7c3aed'],
-    legend: { top: 0, right: 8 },
-    grid: { left: 54, right: 18, top: 36, bottom: 34 },
-    tooltip: { trigger: 'axis', valueFormatter: (value) => formatBps(Number(value || 0)) },
-    xAxis: { type: 'category', boundaryGap: false, data: points.map((point) => formatTime(point.time)) },
-    yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatBps(value) } },
-    series: [
-      { name: '入流量', type: 'line', smooth: true, data: points.map((point) => point.in_bps ?? 0) },
-      { name: '出流量', type: 'line', smooth: true, data: points.map((point) => point.out_bps ?? 0) }
-    ]
+async function loadFollowedTraffic(): Promise<void> {
+  const sequence = ++trafficSequence
+  trafficController?.abort()
+  trafficController = new AbortController()
+  const signal = trafficController.signal
+  const id = deviceId.value
+  const ids = followedPorts.value.map(port => String(port.id))
+  followedTraffic.value = Object.fromEntries(Object.entries(followedTraffic.value).filter(([key]) => ids.includes(key)))
+  followedErrors.value = {}
+  followedLoading.value = [...ids]
+  let next = 0
+  const worker = async () => {
+    while (next < ids.length && !signal.aborted) {
+      const portId = ids[next++]!
+      try {
+        const result = await getPortTraffic(portId, { deviceId: id, range: '1h' }, signal)
+        if (!disposed && sequence === trafficSequence) followedTraffic.value[portId] = result
+      } catch (error) {
+        if (!signal.aborted && !disposed && sequence === trafficSequence) followedErrors.value[portId] = error instanceof Error ? error.message : '加载失败'
+      } finally {
+        if (sequence === trafficSequence) followedLoading.value = followedLoading.value.filter(value => value !== portId)
+      }
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker))
 }
+
+async function loadDiagnostics(): Promise<void> {
+  if (!diagnosticPanels.value.includes('collection')) return
+  const sequence = ++diagnosticSequence
+  const id = deviceId.value
+  diagnosticLoading.value = true
+  try {
+    const [trend, latest] = await Promise.all([
+      getCollectionTrendChart({ deviceId: id, range: '1h' }),
+      listMetricSamples({ deviceId: id, limit: 8 })
+    ])
+    if (disposed || sequence !== diagnosticSequence || id !== deviceId.value) return
+    trendSeries.value = trend
+    samples.value = latest
+  } catch (error) {
+    if (!disposed && sequence === diagnosticSequence) ElMessage.error(error instanceof Error ? error.message : '加载采集诊断失败')
+  } finally { if (sequence === diagnosticSequence) diagnosticLoading.value = false }
+}
+
+function openPicker(): void {
+  selectedPorts.value = followedPorts.value.map(port => String(port.id))
+  pickerKeyword.value = ''
+  pickerVisible.value = true
+}
+function saveSelection(): void {
+  try {
+    favorites.replaceForDevice(interfaces.value.map(port => String(port.id)), selectedPorts.value)
+    pickerVisible.value = false
+    ElMessage.success('关注端口已更新')
+  } catch { ElMessage.error('无法保存关注端口，请检查浏览器存储设置') }
+}
+function togglePort(id: string): void {
+  try { favorites.toggle(id) } catch { ElMessage.error('无法保存关注端口，请检查浏览器存储设置') }
+}
+function openPort(id: string): void { void router.push(`/devices/${deviceId.value}/interfaces/${id}`) }
 
 function statusCount(status: InterfaceStatusPoint['status']): number {
   return statusSeries.value.find((point) => point.status === status)?.count ?? 0
@@ -160,13 +224,30 @@ function formatTime(value: string): string {
   return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-function formatBps(value: number): string {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)} Mbps`
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)} Kbps`
-  return `${value.toFixed(0)} bps`
-}
-
-onMounted(loadData)
+watch(followSignature, () => { void loadFollowedTraffic() })
+watch(deviceId, () => {
+  interfaces.value = []
+  device.value = null
+  followedTraffic.value = {}
+  diagnosticSequence++
+  trendSeries.value = []
+  samples.value = []
+  interfacePage.value = 1
+  pickerVisible.value = false
+  void loadData()
+}, { immediate: true })
+watch(diagnosticPanels, () => { void loadDiagnostics() })
+const refreshTimer = window.setInterval(() => {
+  if (!document.hidden && !loading.value && !pickerVisible.value) void loadData()
+}, 60000)
+onBeforeUnmount(() => {
+  disposed = true
+  dataSequence++
+  trafficSequence++
+  diagnosticSequence++
+  trafficController?.abort()
+  window.clearInterval(refreshTimer)
+})
 </script>
 
 <template>
@@ -183,43 +264,56 @@ onMounted(loadData)
     </div>
 
     <el-row :gutter="16">
-      <el-col :span="6">
+      <el-col :xs="12" :sm="6">
         <MetricCard title="设备状态" :value="device?.enabled ? '启用' : '停用'" description="当前采集开关" type="success" />
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="6">
         <MetricCard title="接口数量" :value="interfaceCount" description="已发现接口" />
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="6">
         <MetricCard title="UP 接口" :value="upCount" description="operStatus = up" type="success" />
       </el-col>
-      <el-col :span="6">
+      <el-col :xs="12" :sm="6">
         <MetricCard title="DOWN 接口" :value="downCount" description="operStatus = down" type="danger" />
       </el-col>
     </el-row>
 
     <el-row :gutter="16" class="dashboard-row">
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <EChartCard title="CPU 使用率" description="当前设备最近 1 小时 CPU 趋势" :options="cpuChartOptions" />
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <EChartCard title="内存使用率" description="当前设备最近 1 小时内存趋势" :options="memoryChartOptions" />
       </el-col>
-      <el-col :span="8">
+      <el-col :xs="24" :sm="8">
         <EChartCard title="接口状态分布" description="当前设备接口 UP / DOWN / UNKNOWN" :options="statusChartOptions" />
-      </el-col>
-      <el-col :span="8">
-        <EChartCard title="采集样本趋势" description="当前设备每 5 分钟样本写入量" :options="trendChartOptions" />
       </el-col>
     </el-row>
 
+    <section class="device-followed-section dashboard-row" aria-label="当前设备关注端口">
+      <div class="device-followed-toolbar">
+        <h3><el-icon><StarFilled /></el-icon>关注端口 <el-tag size="small">{{ followedPorts.length }}</el-tag></h3>
+        <div class="toolbar-actions"><span class="device-followed-hint">仅当前设备 · 每 60 秒刷新</span><el-button :icon="Plus" @click="openPicker">选择关注端口</el-button></div>
+      </div>
+      <div v-if="followedPorts.length" class="device-followed-grid">
+        <FollowedPortCard v-for="port in followedPorts" :key="port.id" :port="port" :traffic="followedTraffic[String(port.id)]" :loading="followedLoading.includes(String(port.id))" :error="followedErrors[String(port.id)]" @open="openPort(String(port.id))" @unfollow="togglePort(String(port.id))" />
+      </div>
+      <el-card v-else class="device-followed-empty" shadow="never">
+        <el-empty :image-size="70" description="还没有关注的端口，选择常用上联口或业务口，在这里快速查看流量"><el-button type="primary" @click="openPicker">选择关注端口</el-button></el-empty>
+      </el-card>
+    </section>
+
     <el-card class="page-card dashboard-row" shadow="never">
-      <template #header>接口清单</template>
-      <el-table :data="interfaces" row-key="id" empty-text="暂无接口数据">
+      <template #header><div class="page-toolbar"><span>端口流量 · 点击端口进入详情</span><el-input v-model="interfaceKeyword" style="width:280px" placeholder="搜索端口名称或业务备注" clearable @input="interfacePage=1" /></div></template>
+      <el-table :data="pagedInterfaces" row-key="id" empty-text="暂无匹配端口">
         <el-table-column prop="if_index" label="ifIndex" width="100" />
         <el-table-column label="接口" min-width="180">
-          <template #default="{ row }">{{ interfaceLabel(row) }}</template>
+          <template #default="{ row }"><el-button type="primary" link @click="openPort(String(row.id))">{{ interfaceLabel(row) }}</el-button></template>
         </el-table-column>
-        <el-table-column prop="if_descr" label="描述" min-width="220" show-overflow-tooltip />
+        <el-table-column label="业务备注" min-width="160" show-overflow-tooltip><template #default="{row}">{{row.user_note||row.if_alias||'—'}}</template></el-table-column>
+        <el-table-column label="入速率" min-width="130"><template #default="{row}">{{formatRate(row.traffic_summary?.in_bps)}}</template></el-table-column>
+        <el-table-column label="出速率" min-width="130"><template #default="{row}">{{formatRate(row.traffic_summary?.out_bps)}}</template></el-table-column>
+        <el-table-column label="数据状态" min-width="130"><template #default="{row}">{{dataStatusNames[row.traffic_summary?.data_status||'no_data']}}</template></el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
             <el-tag :type="row.oper_status === '1' || row.oper_status === 'up' ? 'success' : 'danger'">
@@ -227,24 +321,17 @@ onMounted(loadData)
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="last_seen_at" label="最近发现" width="220" />
+        <el-table-column label="最后流量采样" width="190"><template #default="{row}">{{localTime(row.traffic_summary?.sampled_at)}}</template></el-table-column>
+        <el-table-column label="关注" width="110" fixed="right"><template #default="{ row }"><el-button link :type="favorites.ids.value.includes(String(row.id)) ? 'primary' : 'info'" :aria-label="`${favorites.ids.value.includes(String(row.id)) ? '取消关注' : '关注'} ${interfaceLabel(row)}`" @click="togglePort(String(row.id))">{{ favorites.ids.value.includes(String(row.id)) ? '★ 已关注' : '☆ 关注' }}</el-button></template></el-table-column>
       </el-table>
+      <el-pagination v-model:current-page="interfacePage" :page-size="15" :total="matchingInterfaces.length" layout="total, prev, pager, next" style="margin-top:16px" />
     </el-card>
 
-    <div class="section-title">接口流量图表</div>
-    <el-empty v-if="interfaceTraffic.length === 0" description="暂无接口流量数据" />
-    <el-row v-else :gutter="16">
-      <el-col v-for="item in interfaceTraffic" :key="item.iface.id" :span="12" class="interface-chart-col">
-        <EChartCard
-          :title="interfaceLabel(item.iface)"
-          :description="`ifIndex ${item.iface.if_index} · 入/出方向流量`"
-          :options="trafficOptions(item.points)"
-          :height="240"
-        />
-      </el-col>
-    </el-row>
-
-    <el-card class="page-card dashboard-row" shadow="never">
+    <el-collapse v-model="diagnosticPanels" class="device-diagnostics dashboard-row">
+      <el-collapse-item title="采集诊断 / 样本趋势与最新采集数据" name="collection">
+       <div v-if="diagnosticPanels.includes('collection')" v-loading="diagnosticLoading">
+        <EChartCard title="采集样本趋势" description="当前设备每 5 分钟样本写入量" :options="trendChartOptions" />
+        <el-card class="page-card" shadow="never">
       <template #header>最新采集数据</template>
       <el-table :data="samples" empty-text="暂无采集数据">
         <el-table-column prop="metric_name" label="指标" min-width="180" show-overflow-tooltip />
@@ -253,6 +340,39 @@ onMounted(loadData)
         </el-table-column>
         <el-table-column prop="created_at" label="采集时间" width="240" />
       </el-table>
-    </el-card>
+        </el-card>
+       </div>
+      </el-collapse-item>
+    </el-collapse>
+
+    <el-dialog v-model="pickerVisible" title="选择关注端口" class="device-followed-dialog" width="min(640px, calc(100vw - 32px))">
+      <el-input v-model="pickerKeyword" placeholder="搜索端口名称或业务备注" clearable />
+      <p class="device-followed-hint">已选 {{ selectedPorts.length }} 个 · 关注状态与端口详情同步</p>
+      <el-checkbox-group v-model="selectedPorts" class="device-port-picker">
+        <el-checkbox v-for="port in selectablePorts" :key="port.id" :value="String(port.id)"><div><strong>{{ interfaceLabel(port) }}</strong><span>{{ port.user_note || port.if_alias || '暂无业务备注' }} · {{ formatRate(Number(port.speed_bps) || null) }}</span></div></el-checkbox>
+      </el-checkbox-group>
+      <el-empty v-if="!selectablePorts.length" :image-size="50" description="暂无匹配端口" />
+      <template #footer><el-button @click="pickerVisible = false">取消</el-button><el-button type="primary" @click="saveSelection">保存关注</el-button></template>
+    </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.device-followed-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.device-followed-section{container-type:inline-size}
+.device-followed-toolbar h3{margin:0;display:flex;align-items:center;gap:8px;font-size:16px;color:#172033}
+.device-followed-toolbar h3 .el-icon{color:#2563eb}
+.device-followed-hint{color:#64748b;font-size:13px}
+.device-followed-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.device-followed-empty{border-radius:14px;border-style:dashed}
+.device-diagnostics{border:0;background:transparent}
+.device-port-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;max-height:420px;overflow:auto}
+.device-port-picker .el-checkbox{margin:0;height:auto;min-height:68px;padding:10px;border:1px solid #e2e8f0;border-radius:8px;white-space:normal}
+.device-port-picker span{display:block;color:#64748b;font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+.device-port-picker :deep(.el-checkbox__label){min-width:0;white-space:normal}
+:deep(.device-followed-dialog){max-width:calc(100vw - 32px)}
+@media(max-width:1100px){.device-followed-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.device-followed-grid,.device-port-picker{grid-template-columns:minmax(0,1fr)}}
+@container(max-width:850px){.device-followed-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@container(max-width:550px){.device-followed-grid{grid-template-columns:minmax(0,1fr)}}
+</style>

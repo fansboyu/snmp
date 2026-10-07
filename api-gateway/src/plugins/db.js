@@ -8,6 +8,11 @@ export const dbPlugin = fp(async (app) => {
 
   app.decorate('db', pool)
   await pool.query(`
+    create table if not exists email_notification_config (
+      id integer primary key check (id = 1),
+      config jsonb not null,
+      updated_at timestamptz not null default now()
+    );
     create table if not exists admin_users (
       id bigserial primary key,
       username text not null unique,

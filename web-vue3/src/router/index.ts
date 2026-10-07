@@ -4,6 +4,7 @@ import AlertsView from '../views/AlertsView.vue'
 import BasicLayout from '../layouts/BasicLayout.vue'
 import DashboardView from '../views/DashboardView.vue'
 import DeviceDetailView from '../views/DeviceDetailView.vue'
+import InterfaceDetailView from '../views/InterfaceDetailView.vue'
 import DevicesView from '../views/DevicesView.vue'
 import DiscoveryView from '../views/DiscoveryView.vue'
 import LatestDataView from '../views/LatestDataView.vue'
@@ -23,6 +24,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'discovery', name: 'discovery', component: DiscoveryView, meta: { title: '自动发现' } },
       { path: 'topology', name: 'topology', component: TopologyView, meta: { title: '网络拓扑' } },
       { path: 'devices/:id', name: 'device-detail', component: DeviceDetailView, meta: { title: '设备监控' } },
+      { path: 'devices/:deviceId/interfaces/:interfaceId', name: 'interface-detail', component: InterfaceDetailView, meta: { title: '端口流量' } },
       { path: 'metrics', name: 'metrics', component: MetricsView, meta: { title: '指标管理' } },
       { path: 'alerts', name: 'alerts', component: AlertsView, meta: { title: '告警中心' } },
       { path: 'latest', name: 'latest', component: LatestDataView, meta: { title: '最新数据' } }

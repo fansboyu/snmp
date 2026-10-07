@@ -103,6 +103,12 @@ export interface CreateDevicePayload {
 }
 
 export interface DeviceInterface {
+  error_counters?: {name:string;value:string;sampled_at:string}[]
+  device_host?: string
+  admin_status?: string | null
+  speed_bps?: string | number | null
+  user_note?: string
+  traffic_summary?: PortTrafficSummary
   id: string
   device_id: string
   device_name: string
@@ -132,8 +138,47 @@ export interface ChartPoint {
   time: string
   value?: number | null
   count?: number
-  in_bps?: number
-  out_bps?: number
+  in_bps?: number | null
+  out_bps?: number | null
+}
+
+export interface PortTrafficSummary {
+  in_bps: number | null
+  out_bps: number | null
+  in_utilization: number | null
+  out_utilization: number | null
+  sampled_at: string | null
+  sample_interval_seconds: number | null
+  data_status: 'no_data' | 'stale' | 'invalid' | 'partial' | 'fresh'
+  in_quality: string
+  out_quality: string
+  counter_bits: number
+}
+export interface PortTrafficPoint extends ChartPoint {
+  in_utilization: number | null
+  out_utilization: number | null
+  in_quality: string
+  out_quality: string
+}
+export interface PortTrafficResult {
+  summary: PortTrafficSummary
+  points: PortTrafficPoint[]
+  stats: { in: { average_bps: number | null; peak_bps: number | null; coverage_seconds: number; sample_count: number }; out: { average_bps: number | null; peak_bps: number | null; coverage_seconds: number; sample_count: number } }
+  start: string
+  end: string
+  resolution: string
+}
+export function getPort(id: string, deviceId: string, signal?: AbortSignal): Promise<DeviceInterface> {
+  return request(`/api/interfaces/${id}${querySuffix({deviceId})}`,{signal})
+}
+export function getPortTraffic(id: string, params: Record<string,string>, signal?: AbortSignal): Promise<PortTrafficResult> {
+  return request(`/api/interfaces/${id}/traffic${querySuffix(params)}`,{signal})
+}
+export function getPortSummary(id: string, deviceId: string, signal?: AbortSignal): Promise<PortTrafficSummary> {
+  return request(`/api/interfaces/${id}/traffic-summary${querySuffix({deviceId})}`,{signal})
+}
+export function savePortNote(id: string, note: string): Promise<DeviceInterface> {
+  return request(`/api/interfaces/${id}/note`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({user_note:note})})
 }
 
 export interface InterfaceStatusPoint {
@@ -206,6 +251,33 @@ export interface AlertNotification {
 export interface TestEmailResponse {
   event: AlertEvent
   notifications: AlertNotification[]
+}
+
+export interface EmailNotificationConfig {
+  emailEnabled: boolean
+  emailTo: string[]
+  sendResolved: boolean
+  subjectPrefix: string
+  smtpHost: string
+  smtpPort: number
+  smtpFrom: string
+  smtpUsername: string
+  smtpTlsMode: 'starttls' | 'implicit' | 'none'
+  smtpPasswordConfigured: boolean
+  emailToConfigured: boolean
+  source: 'database' | 'environment'
+}
+
+export async function getEmailNotificationConfig(): Promise<EmailNotificationConfig> {
+  return request('/api/alerts/notification-config')
+}
+
+export async function saveEmailNotificationConfig(payload: Omit<EmailNotificationConfig, 'source' | 'smtpPasswordConfigured' | 'emailToConfigured'> & { smtpPassword?: string; clearPassword?: boolean }): Promise<EmailNotificationConfig> {
+  return request('/api/alerts/notification-config', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
 }
 
 export interface DiscoveryJob {

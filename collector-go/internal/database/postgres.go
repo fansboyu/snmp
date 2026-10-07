@@ -335,6 +335,11 @@ func (store *PostgresStore) RollupSamples(ctx context.Context, policy collector.
 
 func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err := pool.Exec(ctx, `
+		create table if not exists email_notification_config (
+			id integer primary key check (id = 1),
+			config jsonb not null,
+			updated_at timestamptz not null default now()
+		);
 		alter table alert_notifications add column if not exists subject text;
 		alter table alert_notifications add column if not exists error text;
 		alter table alert_notifications add column if not exists retry_count integer not null default 0;
@@ -786,6 +791,13 @@ func (store *PostgresStore) UpsertInterface(ctx context.Context, info collector.
 			updated_at = now()
 		returning id
 	`, info.DeviceID, info.IfIndex, info.IfDescr, info.IfName, info.IfAlias, info.OperStatus, info.LastSeenAt).Scan(&id)
+	if err == nil {
+		_, err = store.pool.Exec(ctx, `update device_interfaces set
+			if_name = case when $2 then $3 else if_name end,
+			if_alias = case when $4 then $5 else if_alias end,
+			admin_status = coalesce(nullif($6,''), admin_status),
+			speed_bps = coalesce($7,speed_bps) where id=$1`, id, info.HasName, info.IfName, info.HasAlias, info.IfAlias, info.AdminStatus, info.SpeedBps)
+	}
 	return id, err
 }
 

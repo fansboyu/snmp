@@ -7,10 +7,10 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
+	"snmp-monitor/collector-go/internal/mailconfig"
 )
 
 type Store interface {
@@ -29,67 +29,24 @@ type Store interface {
 }
 
 type Engine struct {
-	Store            Store
-	Interval         time.Duration
-	CleanupInterval  time.Duration
-	RetentionPolicy  RetentionPolicy
-	RollupPolicy     RollupPolicy
-	Timeout          time.Duration
-	Retries          int
-	WorkerCount      int
-	MaxRepetitions   uint32
-	DefaultCommunity string
-	Notifications    NotificationSettings
-	StorageGuard     StorageGuard
-}
-
-func (engine Engine) Run(ctx context.Context) error {
-	if err := engine.collectOnce(ctx); err != nil {
-		log.Printf("initial collect failed: %v", err)
-	}
-
-	ticker := time.NewTicker(engine.Interval)
-	defer ticker.Stop()
-
-	var cleanupTicker *time.Ticker
-	if engine.CleanupInterval > 0 && engine.RetentionPolicy.Enabled() {
-		cleanupTicker = time.NewTicker(engine.CleanupInterval)
-		defer cleanupTicker.Stop()
-		engine.cleanupOldData(ctx)
-	}
-
-	var rollupTicker *time.Ticker
-	if engine.RollupPolicy.Runnable() {
-		rollupTicker = time.NewTicker(engine.RollupPolicy.Interval)
-		defer rollupTicker.Stop()
-		engine.rollupSamples(ctx)
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if err := engine.collectOnce(ctx); err != nil {
-				log.Printf("collect failed: %v", err)
-			}
-		case <-cleanupChan(cleanupTicker):
-			engine.cleanupOldData(ctx)
-		case <-tickerChan(rollupTicker):
-			engine.rollupSamples(ctx)
-		}
-	}
-}
-
-func cleanupChan(ticker *time.Ticker) <-chan time.Time {
-	return tickerChan(ticker)
-}
-
-func tickerChan(ticker *time.Ticker) <-chan time.Time {
-	if ticker == nil {
-		return nil
-	}
-	return ticker.C
+	Store              Store
+	Interval           time.Duration
+	CleanupInterval    time.Duration
+	RetentionPolicy    RetentionPolicy
+	RollupPolicy       RollupPolicy
+	Timeout            time.Duration
+	DeviceTimeout      time.Duration
+	NeighborInterval   time.Duration
+	NeighborTimeout    time.Duration
+	RefreshInterval    time.Duration
+	DatabaseTimeout    time.Duration
+	MaintenanceTimeout time.Duration
+	Retries            int
+	WorkerCount        int
+	MaxRepetitions     uint32
+	DefaultCommunity   string
+	Notifications      NotificationSettings
+	StorageGuard       StorageGuard
 }
 
 func (engine Engine) cleanupOldData(ctx context.Context) {
@@ -133,73 +90,6 @@ func (engine Engine) rollupSamples(ctx context.Context) {
 	}
 }
 
-func (engine Engine) collectOnce(ctx context.Context) error {
-	decision := engine.StorageGuard.Evaluate(ctx, engine.Store)
-	if decision.Protected {
-		log.Printf(
-			"storage protection active; skip this collection cycle: path=%s used=%.2f%%",
-			decision.Usage.Path,
-			decision.Usage.UsedPercent,
-		)
-		return nil
-	}
-
-	devices, err := engine.Store.ListEnabledDevices(ctx)
-	if err != nil {
-		return err
-	}
-
-	jobs := make(chan Device)
-	var waitGroup sync.WaitGroup
-
-	workerCount := engine.WorkerCount
-	if workerCount <= 0 {
-		workerCount = 32
-	}
-
-	for index := 0; index < workerCount; index++ {
-		waitGroup.Add(1)
-		go func() {
-			defer waitGroup.Done()
-			for device := range jobs {
-				metrics, err := engine.Store.ListMetrics(ctx, device.TemplateID)
-				if err != nil {
-					log.Printf("list metrics for %s failed: %v", device.Host, err)
-					continue
-				}
-				samples, interfaceSamples := engine.collectDevice(ctx, device, metrics)
-				if len(samples) > 0 {
-					if err := engine.Store.SaveSamples(ctx, samples); err != nil {
-						log.Printf("save samples for %s failed: %v", device.Host, err)
-					}
-				}
-				if len(interfaceSamples) > 0 {
-					if err := engine.Store.SaveInterfaceSamples(ctx, interfaceSamples); err != nil {
-						log.Printf("save interface samples for %s failed: %v", device.Host, err)
-					}
-				}
-				if err := engine.evaluateAlerts(ctx, device, samples, interfaceSamples); err != nil {
-					log.Printf("evaluate alerts for %s failed: %v", device.Host, err)
-				}
-			}
-		}()
-	}
-
-	for _, device := range devices {
-		select {
-		case <-ctx.Done():
-			close(jobs)
-			waitGroup.Wait()
-			return nil
-		case jobs <- device:
-		}
-	}
-
-	close(jobs)
-	waitGroup.Wait()
-	return nil
-}
-
 func (engine Engine) collectDevice(ctx context.Context, device Device, metrics []MetricDefinition) ([]MetricSample, []InterfaceMetricSample) {
 	scalarMetrics := make([]MetricDefinition, 0, len(metrics))
 	walkMetrics := make([]MetricDefinition, 0, len(metrics))
@@ -216,19 +106,21 @@ func (engine Engine) collectDevice(ctx context.Context, device Device, metrics [
 	}
 
 	client := engine.snmpClient(device)
+	client.Context = ctx
 	if err := client.Connect(); err != nil {
 		log.Printf("connect %s failed: %v", device.Host, err)
 		return nil, nil
 	}
 	defer client.Conn.Close()
+	// Unreachable devices should not spend a full cycle walking every interface column.
+	if _, err := client.Get([]string{".1.3.6.1.2.1.1.2.0"}); err != nil {
+		log.Printf("probe %s failed: %v", device.Host, err)
+		return nil, nil
+	}
 
 	samples := engine.collectScalarMetrics(device, client, scalarMetrics)
 	samples = append(samples, engine.collectWalkMetrics(device, client, walkMetrics)...)
 	interfaceSamples := engine.collectInterfaceMetrics(ctx, device, client, interfaceMetrics)
-	neighbors := engine.collectNeighbors(device, client)
-	if err := engine.Store.SaveNeighbors(ctx, device.ID, neighbors); err != nil {
-		log.Printf("save neighbors for %s failed: %v", device.Host, err)
-	}
 	return samples, interfaceSamples
 }
 
@@ -284,6 +176,9 @@ func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, me
 
 		values := make([]float64, 0)
 		walkFn := func(variable gosnmp.SnmpPDU) error {
+			if variable.Type == gosnmp.NoSuchObject || variable.Type == gosnmp.NoSuchInstance || variable.Type == gosnmp.EndOfMibView {
+				return nil
+			}
 			value, ok := snmpNumericValue(variable.Value)
 			if !ok {
 				return nil
@@ -327,6 +222,9 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 		}
 
 		walkFn := func(variable gosnmp.SnmpPDU) error {
+			if variable.Type == gosnmp.NoSuchObject || variable.Type == gosnmp.NoSuchInstance || variable.Type == gosnmp.EndOfMibView {
+				return nil
+			}
 			ifIndex, ok := interfaceIndex(tableOID, variable.Name)
 			if !ok {
 				return nil
@@ -343,10 +241,25 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 				info.IfDescr = value
 			case "ifOperStatus":
 				info.OperStatus = value
+			case "ifName":
+				info.IfName, info.HasName = value, true
+			case "ifAlias":
+				info.IfAlias, info.HasAlias = value, true
+			case "ifAdminStatus":
+				info.AdminStatus = value
+			case "ifSpeed", "ifHighSpeed":
+				if speed, err := strconv.ParseInt(value, 10, 64); err == nil {
+					if metric.Name == "ifHighSpeed" {
+						speed *= 1000000
+					}
+					if speed >= 0 && (metric.Name == "ifHighSpeed" || speed < 4294967295) {
+						info.SpeedBps = &speed
+					}
+				}
 			}
 
 			interfaceID, ok := interfaceIDs[ifIndex]
-			if !ok || info.IfDescr != "" || info.OperStatus != "" {
+			if !ok || info.IfDescr != "" || info.OperStatus != "" || info.HasName || info.HasAlias || info.AdminStatus != "" || info.SpeedBps != nil {
 				var err error
 				interfaceID, err = engine.Store.UpsertInterface(ctx, info)
 				if err != nil {
@@ -506,12 +419,27 @@ func (engine Engine) resolveAlertEvent(ctx context.Context, ruleID int64, device
 		log.Printf("resolve alert event failed: %v", err)
 		return
 	}
-	if event != nil && engine.Notifications.SendResolved {
+	if event != nil {
 		engine.queueAlertNotifications(ctx, *event, "resolved")
 	}
 }
 
 func (engine Engine) queueAlertNotifications(ctx context.Context, event AlertEvent, action string) {
+	if store, ok := engine.Store.(interface {
+		LoadMailConfig(context.Context) (*mailconfig.Config, error)
+	}); ok {
+		config, err := store.LoadMailConfig(ctx)
+		if err != nil {
+			log.Printf("load email notification config failed: %v", err)
+			return
+		}
+		if config != nil {
+			engine.Notifications = NotificationSettings{Enabled: config.EmailEnabled, Targets: config.EmailTo, SendResolved: config.SendResolved, SubjectPrefix: config.SubjectPrefix}
+		}
+	}
+	if action == "resolved" && !engine.Notifications.SendResolved {
+		return
+	}
 	if !engine.Notifications.Enabled || len(engine.Notifications.Targets) == 0 || event.ID == 0 {
 		return
 	}
@@ -907,6 +835,9 @@ func snmpNumericValue(value interface{}) (float64, bool) {
 }
 
 func scaledSNMPValueText(metric MetricDefinition, value interface{}) string {
+	if metric.ValueType == "string" || (metricScale(metric) == 1 && (metric.ValueType == "counter" || strings.HasPrefix(metric.Name, "ifHC"))) {
+		return snmpValueText(value)
+	}
 	number, ok := snmpNumericValue(value)
 	if !ok {
 		return snmpValueText(value)

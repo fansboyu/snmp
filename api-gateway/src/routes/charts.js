@@ -1,3 +1,4 @@
+import { buildTraffic, loadTrafficRows, trafficWindow } from '../port-traffic.js'
 const rangeMap = {
   '1h': '1 hour',
   '6h': '6 hours',
@@ -112,93 +113,19 @@ export async function chartRoutes(app) {
   })
 
   app.get('/interface-traffic', async (request) => {
-    const deviceId = request.query.deviceId
-    const interfaceId = request.query.interfaceId
-    const range = request.query.range
-    const interval = rangeInterval(request.query.range)
-    if (shouldUseRollup(range)) {
-      const result = await app.db.query(
-        `
-          with ordered as (
-            select
-              r.bucket_start as created_at,
-              r.interface_id,
-              m.name as metric_name,
-              r.last_value as value,
-              lag(r.last_value)
-                over (partition by r.interface_id, m.name order by r.bucket_start) as previous_value,
-              lag(r.bucket_start)
-                over (partition by r.interface_id, m.name order by r.bucket_start) as previous_time
-            from interface_metric_sample_rollups r
-            join metric_definitions m on m.id = r.metric_id
-            where r.bucket_seconds = $4
-              and r.bucket_start >= now() - $3::interval
-              and ($1::bigint is null or r.device_id = $1)
-              and ($2::bigint is null or r.interface_id = $2)
-              and m.name in ('ifInOctets', 'ifOutOctets')
-          )
-          select
-            created_at as time,
-            metric_name,
-            greatest(((value - previous_value) * 8) / nullif(extract(epoch from created_at - previous_time), 0), 0) as bps
-          from ordered
-          where previous_value is not null and value >= previous_value
-          order by created_at
-        `,
-        [deviceId ?? null, interfaceId ?? null, interval, rollupBucketSeconds]
-      )
-
-      const buckets = new Map()
-      for (const row of result.rows) {
-        const key = new Date(row.time).toISOString()
-        const point = buckets.get(key) ?? { time: row.time, in_bps: 0, out_bps: 0 }
-        if (row.metric_name === 'ifInOctets') point.in_bps += Number(row.bps)
-        if (row.metric_name === 'ifOutOctets') point.out_bps += Number(row.bps)
-        buckets.set(key, point)
-      }
-      return Array.from(buckets.values())
-    }
-    const result = await app.db.query(
-      `
-        with ordered as (
-          select
-            s.created_at,
-            s.interface_id,
-            m.name as metric_name,
-            nullif(regexp_replace(s.value_text, '[^0-9]+', '', 'g'), '')::numeric as value,
-            lag(nullif(regexp_replace(s.value_text, '[^0-9]+', '', 'g'), '')::numeric)
-              over (partition by s.interface_id, m.name order by s.created_at) as previous_value,
-            lag(s.created_at)
-              over (partition by s.interface_id, m.name order by s.created_at) as previous_time
-          from interface_metric_samples s
-          join metric_definitions m on m.id = s.metric_id
-          where s.created_at >= now() - $3::interval
-            and ($1::bigint is null or s.device_id = $1)
-            and ($2::bigint is null or s.interface_id = $2)
-            and m.name in ('ifInOctets', 'ifOutOctets')
-        )
-        select
-          created_at as time,
-          metric_name,
-          greatest(((value - previous_value) * 8) / nullif(extract(epoch from created_at - previous_time), 0), 0) as bps
-        from ordered
-        where previous_value is not null and value >= previous_value
-        order by created_at
-      `,
-      [deviceId ?? null, interfaceId ?? null, interval]
-    )
-
-    const buckets = new Map()
-    for (const row of result.rows) {
-      const key = new Date(row.time).toISOString()
-      const point = buckets.get(key) ?? { time: row.time, in_bps: 0, out_bps: 0 }
-      if (row.metric_name === 'ifInOctets') point.in_bps += Number(row.bps)
-      if (row.metric_name === 'ifOutOctets') point.out_bps += Number(row.bps)
-      buckets.set(key, point)
-    }
-    return Array.from(buckets.values())
+    const window=trafficWindow(request.query)
+    const interfaces=await app.db.query('select * from device_interfaces where ($1::bigint is null or device_id=$1) and ($2::bigint is null or id=$2)',[request.query.deviceId??null,request.query.interfaceId??null])
+    const rows=await loadTrafficRows(app.db,interfaces.rows.map(i=>i.id),window)
+    const grouped=new Map()
+    for(const row of rows){const id=String(row.interface_id);if(!grouped.has(id))grouped.set(id,[]);grouped.get(id).push(row)}
+    const buckets=new Map()
+    for(const iface of interfaces.rows){for(const point of buildTraffic(grouped.get(String(iface.id))||[],iface,window).points){
+      const key=new Date(point.time).toISOString();const bucket=buckets.get(key)||{time:key,in_bps:null,out_bps:null}
+      for(const field of ['in_bps','out_bps'])if(point[field]!=null)bucket[field]=(bucket[field]??0)+point[field]
+      buckets.set(key,bucket)
+    }}
+    return Array.from(buckets.values()).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time))
   })
-
   app.get('/interface-status', async (request) => {
     const deviceId = request.query.deviceId
     const result = await app.db.query(
