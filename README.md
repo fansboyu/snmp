@@ -1,6 +1,6 @@
 # SNMP Monitoring Platform
 
-当前正式版本：**v1.6.0**。本版增加独立端口流量详情、设备页三列关注端口、界面邮件配置、设备独立采集调度和 Windows 离线发布工具。完整变更与升级说明见 [v1.6.0 发布说明](docs/releases/v1.6.0.md)。
+当前发布版本：**v1.6.1**。本版升级 PostgreSQL 18、Go、Node、Alpine 和数据库驱动，更新 Windows 离线安装及备份恢复工具。完整变更与升级说明见 [v1.6.1 发布说明](docs/releases/v1.6.1.md)。端口流量、三列关注卡片、邮件配置和独立采集调度继续保留。
 
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
 
@@ -21,8 +21,12 @@
 - **采集引擎**：Go + `gosnmp`
 - **API 网关**：Node.js + Fastify
 - **前端界面**：Vue 3 + TypeScript + Element Plus + Vite + Nginx
-- **数据库**：PostgreSQL 16
+- **数据库**：PostgreSQL 18（当前工作区）；已发布的 v1.6.0 离线包仍为 PostgreSQL 16
 - **部署方式**：Docker Compose
+
+当前工作区基础环境：Go 1.27.1 / Alpine 3.24.2，Node 24.21.0 / Alpine 3.24，pgx/v5 5.11.0、gosnmp 1.45.0、x/text 0.42.0。API 使用 Fastify 5.12.5、pg 8.23.1、CORS 11.3.0、JWT 10.2.2；前端构建也使用 Node 24。依赖锁文件固定实际安装版本。pgx v5 使用 pgxpool.New，并保留 Ping 和运行表结构检查，确保连接失败时启动立即报错。旧 pgx/v4、pgproto3/v2 和不再需要的 x/crypto 依赖已移除。已有发布包保持原样，升级后的基础环境需重新构建镜像；修改宿主机工具版本不会更新运行中的容器。
+
+升级验证涵盖 Go 测试与竞态检测、PostgreSQL 18 SCRAM/批量写入/Counter64 精度、Linux 本地 SMTP STARTTLS/隐式 TLS/拒绝未受信证书、隔离 SNMP→采集→数据库→API→页面、发现任务及本地通知队列。TLS 回归测试使用临时证书和回环 SMTP，不连接外部邮件服务。Go Docker 构建恢复默认模块校验数据库，不再设置 GOSUMDB=off。
 
 ## 项目结构
 
@@ -83,15 +87,19 @@ docker compose down -v
 
 ## Docker 升级与数据库迁移
 
+当前工作区已迁移至 PostgreSQL 18，使用独立的 `postgres18-data` 卷，挂载到 `/var/lib/postgresql`。已有 PostgreSQL 16 环境必须先完成逻辑备份恢复，不能直接换镜像标签或仅执行 `up`。迁移和回退边界见 [PostgreSQL 18 迁移说明](docs/postgresql18-migration.md)。采集器的磁盘保护也挂载新卷。
+
 客户通过 Docker 方式升级时，核心原则是保留 PostgreSQL 数据卷。不要执行 `docker compose down -v`、`docker volume rm ...postgres-data` 或 `docker system prune --volumes`，否则会删除设备、拓扑、告警和历史样本数据。
 
-推荐升级流程：
+以下常规升级流程仅适用于已完成 PostgreSQL 18 数据迁移的环境。v1.6.0 的 PostgreSQL 16 用户须先按迁移说明完成逻辑备份恢复，不能直接执行下面的镜像替换步骤：
 
 ```powershell
-docker exec snmp-monitor-postgres pg_dump -U snmp -d snmp_monitor > snmp_monitor_backup.sql
+docker compose stop api-gateway web-vue3 collector-go discovery-worker notifier
+docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp_monitor_backup.dump
+docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.0
+git checkout v1.6.1
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -1161,7 +1169,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.0` 构建并导出当前项目的七个运行镜像，生成 `releases/netlooker-1.6.0-windows-amd64.zip`。该版本包含设备页原位三列关注端口，此前 2026.10.07.1 / 2026.10.07.2 本地预发布包保留。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.1` 导出七个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 

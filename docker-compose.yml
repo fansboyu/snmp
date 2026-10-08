@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: snmp-monitor-postgres
     environment:
       POSTGRES_DB: snmp_monitor
@@ -9,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres18-data:/var/lib/postgresql
       - ./postgres/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
       - ./postgres/seed.sql:/docker-entrypoint-initdb.d/002-seed.sql:ro
     healthcheck:
@@ -119,7 +119,7 @@ services:
       ALERT_EMAIL_SEND_RESOLVED: ${ALERT_EMAIL_SEND_RESOLVED:-true}
       ALERT_EMAIL_SUBJECT_PREFIX: ${ALERT_EMAIL_SUBJECT_PREFIX:-[SNMP Monitor]}
     volumes:
-      - postgres-data:/postgres-data:ro
+      - postgres18-data:/postgres-data:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -183,7 +183,7 @@ services:
       - snmp-monitor-net
 
 volumes:
-  postgres-data:
+  postgres18-data:
 
 networks:
   snmp-monitor-net:

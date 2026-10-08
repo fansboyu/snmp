@@ -1,6 +1,6 @@
 {
   "name": "snmp-monitor-api-gateway",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,11 +8,11 @@
     "start": "node src/server.js"
   },
   "dependencies": {
-    "@fastify/cors": "^11.2.0",
+    "@fastify/cors": "^11.3.0",
     "@fastify/env": "^6.0.0",
-    "@fastify/jwt": "^10.0.0",
-    "fastify": "^5.8.5",
+    "@fastify/jwt": "^10.2.2",
+    "fastify": "^5.12.5",
     "fastify-plugin": "^5.1.0",
-    "pg": "^8.20.0"
+    "pg": "^8.23.1"
   }
 }

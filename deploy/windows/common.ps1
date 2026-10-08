@@ -70,6 +70,11 @@ function Get-PostgresContainer {
     return [string]$id
 }
 
+function Get-PostgresMajor {
+    $number = [int](Invoke-Compose -Arguments @('exec', '-T', 'postgres', 'psql', '-X', '-U', 'snmp', '-d', 'snmp_monitor', '-At', '-c', 'show server_version_num'))
+    return [int][Math]::Floor($number / 10000)
+}
+
 function Wait-Web {
     $config = Get-PackageConfig
     $deadline = [DateTime]::UtcNow.AddSeconds(120)

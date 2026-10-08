@@ -11,8 +11,8 @@ import (
 	"snmp-monitor/collector-go/internal/collector"
 	"snmp-monitor/collector-go/internal/discovery"
 
-	"github.com/jackc/pgx/v4"
-	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type PostgresStore struct {
@@ -20,7 +20,7 @@ type PostgresStore struct {
 }
 
 func Connect(ctx context.Context, databaseURL string) (*PostgresStore, error) {
-	pool, err := pgxpool.Connect(ctx, databaseURL)
+	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, err
 	}

@@ -6,7 +6,7 @@ services:
       POSTGRES_USER: snmp
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run install.ps1 first}
     volumes:
-    - postgres-data:/var/lib/postgresql/data
+    - postgres18-data:/var/lib/postgresql
     healthcheck:
       test:
       - CMD-SHELL
@@ -129,7 +129,7 @@ services:
       ALERT_EMAIL_SEND_RESOLVED: ${ALERT_EMAIL_SEND_RESOLVED:-true}
       ALERT_EMAIL_SUBJECT_PREFIX: ${ALERT_EMAIL_SUBJECT_PREFIX:-[SNMP Monitor]}
     volumes:
-    - postgres-data:/postgres-data:ro
+    - postgres18-data:/postgres-data:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -214,7 +214,7 @@ services:
         max-file: '3'
     platform: linux/amd64
 volumes:
-  postgres-data: null
+  postgres18-data: null
 networks:
   snmp-monitor-net:
     driver: bridge

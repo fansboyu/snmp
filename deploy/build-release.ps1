@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$ReleaseVersion = '1.6.0',
+    [Parameter(Mandatory = $true)][string]$ReleaseVersion,
     [string]$OutputDirectory,
     [string]$SourceProject = 'snmp-for',
     [switch]$SkipBuild
@@ -31,7 +31,7 @@ foreach ($template in @('.env.example', '部署说明.md')) {
 }
 $images = @()
 foreach ($service in @('postgres', 'api-gateway', 'migrator', 'collector-go', 'discovery-worker', 'notifier', 'web-vue3')) {
-    $source = if ($service -eq 'postgres') { 'postgres:16-alpine' } else { "${SourceProject}-${service}:latest" }
+    $source = if ($service -eq 'postgres') { 'postgres:18-alpine' } else { "${SourceProject}-${service}:latest" }
     $reference = "netlooker/${service}:$ReleaseVersion"
     $details = @(Run-Docker -Arguments @('image', 'inspect', $source) | ConvertFrom-Json)[0]
     if ($details.Os -ne 'linux' -or $details.Architecture -ne 'amd64') { throw "Unsupported image architecture: $source" }
@@ -42,7 +42,7 @@ Run-Docker -Arguments (@('save', '--output', (Join-Path $OutputDirectory 'images
 $commit = & git -C $repository rev-parse HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot read source revision.' }
 $dirty = @(& git -C $repository status --porcelain).Count -gt 0
-$manifest = [ordered]@{ product = 'netlooker'; version = $ReleaseVersion; createdAt = [DateTime]::UtcNow.ToString('o'); platform = 'linux/amd64'; sourceCommit = $commit; includesWorkingTreeChanges = $dirty; images = $images; files = @() }
+$manifest = [ordered]@{ product = 'netlooker'; version = $ReleaseVersion; postgresMajor = 18; createdAt = [DateTime]::UtcNow.ToString('o'); platform = 'linux/amd64'; sourceCommit = $commit; includesWorkingTreeChanges = $dirty; images = $images; files = @() }
 foreach ($file in Get-ChildItem -LiteralPath $OutputDirectory -Recurse -File -Force) {
     $relative = $file.FullName.Substring($OutputDirectory.Length + 1).Replace([IO.Path]::DirectorySeparatorChar, [char]'/')
     $manifest.files += [ordered]@{ path = $relative; bytes = $file.Length; sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
