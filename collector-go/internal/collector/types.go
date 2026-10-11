@@ -17,6 +17,7 @@ type Device struct {
 	SNMPV3PrivPassphrase string
 	SNMPV3ContextName    string
 	TemplateID           int64
+	UpdatedAt            time.Time
 }
 
 type MetricDefinition struct {

@@ -11,7 +11,7 @@ RUN go build -o /bin/collector-go .
 
 FROM alpine:3.24.2
 
-RUN adduser -D -H appuser
+RUN apk add --no-cache iputils libcap && setcap cap_net_raw+ep /bin/ping && adduser -D -H appuser
 USER appuser
 
 COPY --from=build /bin/collector-go /bin/collector-go

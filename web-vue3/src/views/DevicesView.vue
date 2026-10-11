@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { createDevice, deleteDevice, listDeviceGroups, listDevices, updateDevice, type Device, type DeviceGroup } from '../services/api'
 
@@ -110,12 +110,16 @@ function defaultGroupId(items: DeviceGroup[]): string {
   return items.find((group) => group.name === '默认分组')?.id || items[0]?.id || ''
 }
 
-function onlineStatusType(status?: Device['online_status']): 'success' | 'danger' {
-  return status === 'online' ? 'success' : 'danger'
+function onlineStatusType(status?: Device['online_status']): 'success' | 'danger' | 'warning' | 'info' {
+  if (status === 'online') return 'success'
+  if (status === 'offline') return 'danger'
+  if (status === 'checking' || status === 'collection_error') return 'warning'
+  return 'info'
 }
 
 function onlineStatusText(status?: Device['online_status']): string {
-  return status === 'online' ? '在线' : '离线'
+  const labels = { online: '在线', offline: '离线', checking: '正在确认', collection_error: '采集异常', unknown: '状态未知', pending: '等待首次采集', disabled: '停用' }
+  return status ? labels[status] : '状态未知'
 }
 
 async function changeDeviceGroup(device: Device, groupId: string | null): Promise<void> {
@@ -173,6 +177,10 @@ async function removeDevice(device: Device): Promise<void> {
 }
 
 onMounted(loadData)
+const statusTimer = window.setInterval(() => {
+  if (!loading.value && !document.hidden) void loadData()
+}, 30_000)
+onUnmounted(() => window.clearInterval(statusTimer))
 </script>
 
 <template>
@@ -270,7 +278,9 @@ onMounted(loadData)
         </el-table-column>
         <el-table-column label="在线状态" width="120">
           <template #default="{ row }">
-            <el-tag :type="onlineStatusType(row.online_status)">{{ onlineStatusText(row.online_status) }}</el-tag>
+            <el-tooltip :content="`最后采集：${row.last_seen_at ? new Date(row.last_seen_at).toLocaleString() : '暂无'}；最后探测：${row.last_probe_at ? new Date(row.last_probe_at).toLocaleString() : '暂无'}；${row.probe_reason || '尚无探测结果'}`">
+              <el-tag :type="onlineStatusType(row.online_status)">{{ onlineStatusText(row.online_status) }}</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column prop="snmp_version" label="SNMP" width="110">

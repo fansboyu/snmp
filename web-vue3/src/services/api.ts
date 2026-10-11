@@ -15,7 +15,10 @@ export interface Device {
   snmp_v3_priv_passphrase?: string | null
   snmp_v3_context_name?: string | null
   enabled: boolean
-  online_status?: 'online' | 'offline'
+  online_status?: 'online' | 'offline' | 'checking' | 'collection_error' | 'unknown' | 'pending' | 'disabled'
+  last_probe_at?: string | null
+  probe_reason?: string | null
+  consecutive_failures?: number
   last_seen_at?: string | null
   created_at?: string
 }

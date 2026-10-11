@@ -79,6 +79,10 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 	workers.Add(2)
 	go func() { defer workers.Done(); engine.refreshDevices(ctx, catalog) }()
 	go func() { defer workers.Done(); engine.runMaintenance(ctx, &protected) }()
+	if store, ok := engine.Store.(HealthStore); ok {
+		workers.Add(1)
+		go func() { defer workers.Done(); engine.runHealthChecks(ctx, store) }()
+	}
 	for n := 0; n < engine.WorkerCount; n++ {
 		workers.Add(1)
 		go func() {

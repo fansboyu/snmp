@@ -605,7 +605,8 @@ func (store *PostgresStore) ListEnabledDevices(ctx context.Context) ([]collector
 			coalesce(d.snmp_v3_priv_protocol, ''),
 			coalesce(d.snmp_v3_priv_passphrase, ''),
 			coalesce(d.snmp_v3_context_name, ''),
-			coalesce(g.template_id, 0)
+			coalesce(g.template_id, 0),
+			d.updated_at
 		from devices d
 		left join device_groups g on g.id = d.group_id
 		where d.enabled = true
@@ -634,6 +635,7 @@ func (store *PostgresStore) ListEnabledDevices(ctx context.Context) ([]collector
 			&device.SNMPV3PrivPassphrase,
 			&device.SNMPV3ContextName,
 			&device.TemplateID,
+			&device.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

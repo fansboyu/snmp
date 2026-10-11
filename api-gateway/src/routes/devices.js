@@ -19,13 +19,22 @@ export async function deviceRoutes(app) {
         d.snmp_v3_context_name,
         d.enabled,
         case
-          when d.enabled = true and activity.last_seen_at >= now() - interval '3 minutes' then 'online'
-          else 'offline'
+          when not d.enabled then 'disabled'
+          when activity.last_seen_at >= now() - interval '6 minutes' then 'online'
+          when h.checked_at >= now() - interval '90 seconds'
+            and h.checked_at >= d.updated_at
+            and h.checked_at >= coalesce(activity.last_seen_at, d.created_at) then h.status
+          when activity.last_seen_at is null and d.created_at >= now() - interval '6 minutes' then 'pending'
+          else 'unknown'
         end as online_status,
         activity.last_seen_at,
+        h.checked_at as last_probe_at,
+        h.reason as probe_reason,
+        h.consecutive_failures,
         d.created_at
       from devices d
       left join device_groups g on g.id = d.group_id
+      left join device_health h on h.device_id = d.id
       left join lateral (
         select max(last_seen_at) as last_seen_at
         from (
