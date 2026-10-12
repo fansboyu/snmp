@@ -27,6 +27,8 @@ jobs:
         run: |
           if ($env:RELEASE_TAG -notmatch '^v\d+\.\d+\.\d+$') { throw 'Expected a semantic version tag.' }
           $version = $env:RELEASE_TAG.Substring(1)
+          docker pull postgres:18-alpine
+          if ($LASTEXITCODE -ne 0) { throw 'Database image pull failed.' }
           ./deploy/build-release.ps1 -ReleaseVersion $version
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
       - name: Smoke-test exported images
