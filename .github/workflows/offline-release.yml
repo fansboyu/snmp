@@ -29,6 +29,24 @@ jobs:
           $version = $env:RELEASE_TAG.Substring(1)
           ./deploy/build-release.ps1 -ReleaseVersion $version
           if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
+      - name: Smoke-test exported images
+        shell: pwsh
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          $folder = "releases/netlooker-$version-windows-amd64"
+          & "$folder/install.ps1" -SkipImageLoad
+          $configPath = "$folder/.env"
+          $config = [IO.File]::ReadAllText($configPath).Replace('COMPOSE_PROJECT_NAME=netlooker', 'COMPOSE_PROJECT_NAME=netlooker-release-smoke').Replace('15173', '25176').Replace('HOST_BIND=0.0.0.0', 'HOST_BIND=127.0.0.1')
+          [IO.File]::WriteAllText($configPath, $config)
+          try {
+            & "$folder/start.ps1"
+            docker exec netlooker-release-smoke-api-gateway-1 node --input-type=module -e 'process.env.TEST_DATABASE_URL=process.env.DATABASE_URL; await import("./src/device-health.test.js")'
+            if ($LASTEXITCODE -ne 0) { throw 'Device status integration test failed.' }
+            docker exec netlooker-release-smoke-collector-go-1 ping -n -c 1 -W 1 -- 127.0.0.1
+            if ($LASTEXITCODE -ne 0) { throw 'Non-root ICMP probe failed.' }
+          } finally {
+            docker compose --project-directory $folder --env-file $configPath -p netlooker-release-smoke -f "$folder/compose.yaml" down
+          }
       - name: Verify archive and publish attachments
         shell: pwsh
         run: |
