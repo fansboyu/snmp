@@ -1,6 +1,6 @@
 # SNMP Monitoring Platform
 
-当前发布版本：**v1.6.1**。本版升级 PostgreSQL 18、Go、Node、Alpine 和数据库驱动，更新 Windows 离线安装及备份恢复工具。完整变更与升级说明见 [v1.6.1 发布说明](docs/releases/v1.6.1.md)。端口流量、三列关注卡片、邮件配置和独立采集调度继续保留。
+当前发布版本：**v1.6.2**。本版增加设备离线主动确认：6 分钟数据过期后执行 SNMP/Ping 探测，连续失败确认离线，区分采集异常与状态未知。完整变更与升级说明见 [v1.6.2 发布说明](docs/releases/v1.6.2.md)。
 
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
 
@@ -99,7 +99,7 @@ docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp
 docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.1
+git checkout v1.6.2
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -1169,7 +1169,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.1` 导出七个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.2` 导出七个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 
