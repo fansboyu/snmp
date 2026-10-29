@@ -12,6 +12,7 @@ import (
 	"snmp-monitor/collector-go/internal/discovery"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -334,7 +335,23 @@ func (store *PostgresStore) RollupSamples(ctx context.Context, policy collector.
 }
 
 func ensureRuntimeSchema(ctx context.Context, pool *pgxpool.Pool) error {
+	for attempt := 0; ; attempt++ {
+		err := ensureRuntimeSchemaOnce(ctx, pool)
+		var pgError *pgconn.PgError
+		if err == nil || !errors.As(err, &pgError) || pgError.Code != "40P01" || attempt >= 3 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 250 * time.Millisecond):
+		}
+	}
+}
+
+func ensureRuntimeSchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err := pool.Exec(ctx, `
+		select pg_advisory_xact_lock(68256301);
 		create table if not exists email_notification_config (
 			id integer primary key check (id = 1),
 			config jsonb not null,
@@ -824,18 +841,51 @@ func (store *PostgresStore) SaveInterfaceSamples(ctx context.Context, samples []
 }
 
 func (store *PostgresStore) SaveNeighbors(ctx context.Context, deviceID int64, neighbors []collector.NeighborInfo) error {
+	return store.saveTopologySnapshot(ctx, deviceID, collector.TopologySnapshot{Neighbors: neighbors}, []string{"lldp", "cdp"})
+}
+
+func (store *PostgresStore) SaveTopologySnapshot(ctx context.Context, deviceID int64, snapshot collector.TopologySnapshot) error {
+	var complete []string
+	for _, scan := range snapshot.Scans {
+		if scan.Status == "success" || scan.Status == "empty" {
+			complete = append(complete, scan.Protocol)
+		}
+	}
+	return store.saveTopologySnapshot(ctx, deviceID, snapshot, complete)
+}
+
+func (store *PostgresStore) saveTopologySnapshot(ctx context.Context, deviceID int64, snapshot collector.TopologySnapshot, complete []string) error {
+	neighbors := snapshot.Neighbors
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	for _, scan := range snapshot.Scans {
+		_, err := tx.Exec(ctx, `insert into topology_scans(device_id,protocol,status,reason,checked_at,last_success_at,neighbor_count)
+   values($1,$2,$3,$4,$5::timestamptz,case when $3 in ('success','empty') then $5::timestamptz end,$6)
+   on conflict(device_id,protocol) do update set status=excluded.status,reason=excluded.reason,checked_at=excluded.checked_at,
+   last_success_at=coalesce(excluded.last_success_at,topology_scans.last_success_at),neighbor_count=excluded.neighbor_count`, deviceID, scan.Protocol, scan.Status, scan.Reason, scan.CheckedAt, scan.Count)
+		if err != nil {
+			return err
+		}
+	}
+	for _, identity := range snapshot.Identities {
+		if identity.Value == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `insert into topology_identities(device_id,kind,value) values($1,$2,$3)
+   on conflict(device_id,kind,value) do update set updated_at=now()`, deviceID, identity.Kind, identity.Value); err != nil {
+			return err
+		}
+	}
 
 	if _, err := tx.Exec(ctx, `
 		update device_neighbors
 		set stale = true,
 			updated_at = now()
-		where device_id = $1
-	`, deviceID); err != nil {
+		where device_id = $1 and protocol=any($2::text[])
+	`, deviceID, complete); err != nil {
 		return err
 	}
 

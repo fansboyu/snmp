@@ -13,6 +13,8 @@ type scheduledDevice struct {
 	device                 Device
 	fastDue, neighborDue   time.Time
 	busy, enabled, healthy bool
+	attempted              bool
+	requestID              int64
 	failures               int
 	revision               uint64
 	cancel                 context.CancelFunc
@@ -23,6 +25,7 @@ type collectionJob struct {
 	neighbors bool
 	revision  uint64
 	ctx       context.Context
+	requestID int64
 }
 
 type collectionResult struct {
@@ -74,11 +77,16 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 	jobs := make(chan collectionJob) // No unbounded queue; overdue work remains in device state.
 	results := make(chan collectionResult, engine.WorkerCount)
 	catalog := make(chan []Device, 1)
+	requests := make(chan []TopologyRequest, 1)
 	var protected atomic.Bool
 	protected.Store(engine.StorageGuard.Path != "")
 	workers.Add(2)
 	go func() { defer workers.Done(); engine.refreshDevices(ctx, catalog) }()
 	go func() { defer workers.Done(); engine.runMaintenance(ctx, &protected) }()
+	if store, ok := engine.Store.(TopologyRequestStore); ok {
+		workers.Add(1)
+		go func() { defer workers.Done(); engine.refreshTopologyRequests(ctx, store, requests) }()
+	}
 	if store, ok := engine.Store.(HealthStore); ok {
 		workers.Add(1)
 		go func() { defer workers.Done(); engine.runHealthChecks(ctx, store) }()
@@ -132,6 +140,7 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 					state.revision++
 					state.failures = 0
 					state.healthy = false
+					state.attempted = false
 				}
 				state.enabled = true
 			}
@@ -145,6 +154,12 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 					}
 				}
 			}
+		case pending := <-requests:
+			for _, request := range pending {
+				if state := states[request.DeviceID]; state != nil && state.requestID == 0 {
+					state.requestID = request.ID
+				}
+			}
 		case result := <-results:
 			state := states[result.job.device.ID]
 			if state == nil {
@@ -153,6 +168,9 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 			state.busy = false
 			state.cancel()
 			state.cancel = nil
+			if result.job.requestID != 0 && state.requestID == result.job.requestID {
+				state.requestID = 0
+			}
 			if !state.enabled {
 				delete(states, result.job.device.ID)
 				continue
@@ -161,6 +179,7 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 				continue
 			}
 			if !result.job.neighbors {
+				state.attempted = true
 				state.healthy = result.success
 				if result.success {
 					state.failures = 0
@@ -182,24 +201,31 @@ func (engine *Engine) runScheduler(ctx context.Context, execute func(collectionJ
 			}
 		}
 		sort.Slice(ready, func(i, j int) bool { return ready[i].fastDue.Before(ready[j].fastDue) })
-		// Fast jobs get first chance at workers; slow jobs use remaining capacity.
-		for _, neighbors := range []bool{false, true} {
+		// Explicit requests get priority; then fast jobs precede periodic neighbors.
+		for _, phase := range []int{0, 1, 2} {
 			for _, state := range ready {
 				if state.busy {
 					continue
 				}
+				neighbors := phase != 1
+				if phase == 0 && state.requestID == 0 || phase != 0 && state.requestID != 0 {
+					continue
+				}
 				due, budget := state.fastDue, engine.DeviceTimeout
 				if neighbors {
-					if !state.healthy || !state.fastDue.After(now) {
+					if phase != 0 && (!state.attempted || !state.fastDue.After(now)) {
 						continue
 					}
 					due, budget = state.neighborDue, engine.NeighborTimeout
+					if phase == 0 {
+						due = now
+					}
 				}
 				if due.After(now) {
 					continue
 				}
 				jobCtx, stop := context.WithTimeout(ctx, budget)
-				job := collectionJob{state.device, neighbors, state.revision, jobCtx}
+				job := collectionJob{device: state.device, neighbors: neighbors, revision: state.revision, ctx: jobCtx, requestID: state.requestID}
 				select {
 				case jobs <- job:
 					state.busy, state.cancel = true, stop
@@ -281,17 +307,56 @@ func (engine *Engine) runCollectionJob(job collectionJob) bool {
 		return false
 	}
 	if job.neighbors {
+		requestStatus, requestReason := "failed", "邻居采集未完成，请检查 SNMP 连通性和采集日志"
+		if job.requestID != 0 {
+			store, ok := engine.Store.(TopologyRequestStore)
+			if !ok {
+				return false
+			}
+			claimed, err := store.ClaimTopologyRequest(job.ctx, job.requestID)
+			if err != nil || !claimed {
+				return false
+			}
+			defer func() {
+				finishCtx, cancel := context.WithTimeout(context.Background(), engine.DatabaseTimeout)
+				defer cancel()
+				if err := store.FinishTopologyRequest(finishCtx, job.requestID, requestStatus, requestReason); err != nil {
+					log.Printf("finish topology request=%d: %v", job.requestID, err)
+				}
+			}()
+		}
 		client := engine.snmpClient(job.device)
-		client.Context = job.ctx
+		networkCtx, stop := context.WithTimeout(job.ctx, engine.NeighborTimeout-min(3*time.Second, engine.NeighborTimeout/5))
+		defer stop()
+		client.Context = networkCtx
 		if err := client.Connect(); err != nil {
 			return false
 		}
 		defer client.Conn.Close()
-		neighbors := engine.collectNeighbors(job.device, client)
+		snapshot := engine.collectTopologySnapshot(job.device, client)
 		if job.ctx.Err() != nil {
 			return false
 		}
-		success = engine.Store.SaveNeighbors(job.ctx, job.device.ID, neighbors) == nil
+		if store, ok := engine.Store.(TopologyStore); ok {
+			success = store.SaveTopologySnapshot(job.ctx, job.device.ID, snapshot) == nil
+		} else {
+			complete := true
+			for _, scan := range snapshot.Scans {
+				if scan.Status != "success" && scan.Status != "empty" {
+					complete = false
+				}
+			}
+			success = complete && engine.Store.SaveNeighbors(job.ctx, job.device.ID, snapshot.Neighbors) == nil
+		}
+		if success {
+			requestStatus, requestReason = "completed", "采集已完成，请查看各协议结果；不支持或无邻居不代表断线"
+			for _, scan := range snapshot.Scans {
+				if scan.Status == "failed" || scan.Status == "partial" {
+					requestStatus, requestReason = "failed", "部分或全部协议查询失败，请查看协议详情后重试"
+					break
+				}
+			}
+		}
 		return success
 	}
 	metrics, err := engine.Store.ListMetrics(job.ctx, job.device.TemplateID)

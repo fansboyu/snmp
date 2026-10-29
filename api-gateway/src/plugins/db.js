@@ -1,5 +1,6 @@
 import fp from 'fastify-plugin'
 import pg from 'pg'
+import { databaseStartup } from '../database-startup.js'
 
 export const dbPlugin = fp(async (app) => {
   const pool = new pg.Pool({
@@ -7,7 +8,8 @@ export const dbPlugin = fp(async (app) => {
   })
 
   app.decorate('db', pool)
-  await pool.query(`
+  await databaseStartup(() => pool.query(`
+    select pg_advisory_xact_lock(68256301);
     create table if not exists email_notification_config (
       id integer primary key check (id = 1),
       config jsonb not null,
@@ -325,7 +327,7 @@ export const dbPlugin = fp(async (app) => {
     insert into alert_rules (name, rule_type, severity, metric_name, operator, threshold, duration_seconds, enabled)
     values ('设备采集无数据', 'device_no_data', 'critical', null, null, null, 0, true)
     on conflict (name) do nothing;
-  `)
+  `))
 
   app.addHook('onClose', async () => {
     await pool.end()

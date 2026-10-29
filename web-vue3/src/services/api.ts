@@ -333,6 +333,12 @@ export interface TopologyMap {
 }
 
 export interface TopologyNode {
+  position_locked?: boolean
+  layer?: 'core' | 'aggregation' | 'access' | 'external'
+  identity_key?: string | null
+  device_status?: Device['online_status']
+  last_sample_at?: string | null
+  probe_reason?: string | null
   id: string
   map_id: string
   device_id?: string | null
@@ -361,7 +367,15 @@ export interface TopologyLink {
   target_interface_name?: string | null
   label?: string | null
   link_type: 'manual' | 'lldp' | 'cdp'
-  status: 'unknown' | 'up' | 'down'
+  status: 'unknown' | 'up' | 'down' | 'stale' | 'unconfirmed' | 'disabled' | 'degraded'
+  reason?: string
+  physical_key?: string | null
+  evidence_ids?: string[]
+  protocols?: string[]
+  binding_locked?: boolean
+  bundle_id?: string | null
+  confirmation?: string
+  evidence_count?: number
   discovery_protocol?: string | null
   neighbor_id?: string | null
   auto_discovered?: boolean
@@ -371,12 +385,21 @@ export interface TopologyLink {
 }
 
 export interface TopologyData {
+  discovery?: TopologyDiscovery
+  devices?: Array<Pick<Device, 'id' | 'name' | 'host' | 'enabled' | 'group_id' | 'group_name' | 'online_status'>>
+  ports?: DeviceInterface[]
+  neighbors?: DeviceNeighbor[]
+  scans?: Array<{device_id:string; device_name:string; protocol:string; status:string; reason:string; checked_at:string; last_success_at?:string; neighbor_count:number}>
   map: TopologyMap
   nodes: TopologyNode[]
   links: TopologyLink[]
 }
 
 export interface DeviceNeighbor {
+  match_state?: 'matched' | 'conflict' | 'unmatched' | 'needs_confirmation'
+  match_basis?: string
+  binding_locked?: boolean
+  candidates?: Array<{id:string;name:string}>
   id: string
   device_id: string
   device_name: string
@@ -402,6 +425,17 @@ export interface DeviceNeighbor {
   last_seen_at: string
   stale: boolean
 }
+
+export interface TopologyScanRequest {
+  id:string; device_id:string; status:'pending'|'running'|'completed'|'failed';reason:string;
+  created_at:string;started_at?:string;finished_at?:string
+}
+export interface TopologyDiscovery {
+  summary:{total:number;attempted:number;successful:number;pending:number;evidence:number;unmatched:number;unmapped_ports:number;links:number}
+  devices:Array<{id:string;name:string;host:string;enabled:boolean;status:string;checked_at:string|null;request?:TopologyScanRequest;
+    scans:Array<{protocol:string;status:string;reason:string;checked_at:string;neighbor_count:number}>}>
+}
+export const requestTopologyScan = (id:string):Promise<TopologyScanRequest> => request(`/api/topology/devices/${id}/scan`,{method:'POST'})
 
 export interface AutoSyncTopologyResponse {
   created_nodes: number
@@ -772,3 +806,21 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   }
   return response.json() as Promise<T>
 }
+
+export interface TopologyDetail {
+  link: TopologyLink
+  nodes: TopologyNode[]
+  traffic: Array<PortTrafficResult & {port:DeviceInterface}>
+  alerts: Array<Pick<AlertEvent,'id'|'title'|'status'|'severity'|'last_seen_at'>>
+  evidence: DeviceNeighbor[]
+  members: TopologyLink[]
+}
+export interface TopologyChange {id:string;entity_type:string;entity_id:string;action:string;created_at:string;before_data:Record<string,unknown>|null;after_data:Record<string,unknown>|null}
+export interface TopologyFlow {id:string;source:PortTrafficSummary|null;target:PortTrafficSummary|null}
+export const getTopologyHistory = (before?:string):Promise<TopologyChange[]> => request(`/api/topology/default/history${before?`?before=${before}`:''}`)
+export const getTopologyLayoutPreview = ():Promise<TopologyNode[]> => request('/api/topology/default/layout-preview')
+export const getTopologyDetail = (id:string,range='1h',signal?:AbortSignal):Promise<TopologyDetail> => request(`/api/topology/links/${id}/detail?range=${range}`,{signal})
+export const getTopologyTraffic = (ids:string[],signal?:AbortSignal):Promise<TopologyFlow[]> => request('/api/topology/default/traffic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_ids:ids}),signal})
+export const setTopologyNode = (id:string,payload:Partial<TopologyNode>):Promise<TopologyNode> => request(`/api/topology/nodes/${id}/settings`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+export const setTopologyLink = (id:string,payload:Partial<TopologyLink>):Promise<TopologyLink> => request(`/api/topology/links/${id}/settings`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+export const bindTopologyNeighbor = (id:string,remote_device_id:string,remote_interface_id?:string):Promise<AutoSyncTopologyResponse> => request(`/api/topology/neighbors/${id}/binding`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({remote_device_id,remote_interface_id:remote_interface_id||null})})

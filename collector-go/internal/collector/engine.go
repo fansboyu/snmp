@@ -612,13 +612,14 @@ type cdpNeighborKey struct {
 }
 
 type lldpNeighborRow struct {
-	LocalPortNum   string
-	RemoteChassis  string
-	RemotePortID   string
-	RemotePortDesc string
-	RemoteSysName  string
-	RemoteSysDesc  string
-	Raw            map[string]string
+	LocalPortNum      string
+	RemoteChassis     string
+	RemotePortID      string
+	RemotePortDesc    string
+	RemoteSysName     string
+	RemoteSysDesc     string
+	RemoteMgmtAddress string
+	Raw               map[string]string
 }
 
 type cdpNeighborRow struct {
@@ -631,16 +632,17 @@ type cdpNeighborRow struct {
 	Raw            map[string]string
 }
 
-func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []NeighborInfo {
-	localPortIDs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.3")
-	localPortDescs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.4")
+func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time, scans ...*neighborScan) []NeighborInfo {
+	scan := scanArgument(scans)
+	localPortIDs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.3", scan)
+	localPortDescs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.4", scan)
 	if len(localPortIDs) == 0 && len(localPortDescs) == 0 {
 		return nil
 	}
 
 	rows := map[lldpNeighborKey]*lldpNeighborRow{}
 	walkLLDPColumn := func(columnOID string, apply func(*lldpNeighborRow, string)) {
-		_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+		scan.walk(client, columnOID, func(variable gosnmp.SnmpPDU) error {
 			parts := oidSuffixParts(columnOID, variable.Name)
 			if len(parts) != 3 {
 				return nil
@@ -664,6 +666,16 @@ func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) [
 	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.9", func(row *lldpNeighborRow, value string) { row.RemoteSysName = value })
 	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.10", func(row *lldpNeighborRow, value string) { row.RemoteSysDesc = value })
 
+	scan.walk(client, ".1.0.8802.1.1.2.1.4.2.1.3", func(variable gosnmp.SnmpPDU) error {
+		parts := oidSuffixParts(".1.0.8802.1.1.2.1.4.2.1.3", variable.Name)
+		if len(parts) >= 5 {
+			key := lldpNeighborKey{TimeMark: parts[0], LocalPortNum: parts[1], RemoteIndex: parts[2]}
+			if row := rows[key]; row != nil {
+				row.RemoteMgmtAddress = lldpManagementAddress(parts)
+			}
+		}
+		return nil
+	})
 	neighbors := make([]NeighborInfo, 0, len(rows))
 	for _, row := range rows {
 		if row.RemoteChassis == "" && row.RemotePortID == "" && row.RemoteSysName == "" {
@@ -672,27 +684,29 @@ func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) [
 		localPortID := localPortIDs[row.LocalPortNum]
 		localPortDesc := localPortDescs[row.LocalPortNum]
 		neighbors = append(neighbors, NeighborInfo{
-			DeviceID:         device.ID,
-			LocalPortID:      localPortID,
-			LocalPortDescr:   localPortDesc,
-			Protocol:         "lldp",
-			RemoteChassisID:  row.RemoteChassis,
-			RemoteDeviceName: firstNonEmpty(row.RemoteSysName, row.RemoteChassis),
-			RemotePortID:     row.RemotePortID,
-			RemotePortDescr:  row.RemotePortDesc,
-			RemoteSysName:    row.RemoteSysName,
-			RemoteSysDescr:   row.RemoteSysDesc,
-			Raw:              row.Raw,
-			LastSeenAt:       now,
+			DeviceID:          device.ID,
+			LocalPortID:       localPortID,
+			LocalPortDescr:    localPortDesc,
+			Protocol:          "lldp",
+			RemoteChassisID:   topologyChassisText(row.RemoteChassis),
+			RemoteDeviceName:  firstNonEmpty(row.RemoteSysName, topologyChassisText(row.RemoteChassis)),
+			RemoteMgmtAddress: row.RemoteMgmtAddress,
+			RemotePortID:      row.RemotePortID,
+			RemotePortDescr:   row.RemotePortDesc,
+			RemoteSysName:     row.RemoteSysName,
+			RemoteSysDescr:    row.RemoteSysDesc,
+			Raw:               row.Raw,
+			LastSeenAt:        now,
 		})
 	}
 	return neighbors
 }
 
-func collectCDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []NeighborInfo {
+func collectCDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time, scans ...*neighborScan) []NeighborInfo {
+	scan := scanArgument(scans)
 	rows := map[cdpNeighborKey]*cdpNeighborRow{}
 	walkCDPColumn := func(columnOID string, apply func(*cdpNeighborRow, string)) {
-		_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+		scan.walk(client, columnOID, func(variable gosnmp.SnmpPDU) error {
 			parts := oidSuffixParts(columnOID, variable.Name)
 			if len(parts) < 2 {
 				return nil
@@ -740,9 +754,10 @@ func collectCDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time) []
 	return neighbors
 }
 
-func walkTextColumn(client *gosnmp.GoSNMP, columnOID string) map[string]string {
+func walkTextColumn(client *gosnmp.GoSNMP, columnOID string, scans ...*neighborScan) map[string]string {
+	scan := scanArgument(scans)
 	values := map[string]string{}
-	_ = walkColumn(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+	scan.walk(client, columnOID, func(variable gosnmp.SnmpPDU) error {
 		parts := oidSuffixParts(columnOID, variable.Name)
 		if len(parts) != 1 {
 			return nil
@@ -754,8 +769,18 @@ func walkTextColumn(client *gosnmp.GoSNMP, columnOID string) map[string]string {
 }
 
 func walkColumn(client *gosnmp.GoSNMP, columnOID string, walkFn func(gosnmp.SnmpPDU) error) error {
-	if err := client.BulkWalk(columnOID, walkFn); err != nil {
-		return client.Walk(columnOID, walkFn)
+	var values []gosnmp.SnmpPDU
+	collect := func(v gosnmp.SnmpPDU) error { values = append(values, v); return nil }
+	if err := client.BulkWalk(columnOID, collect); err != nil {
+		values = nil
+		if err := client.Walk(columnOID, collect); err != nil {
+			return err
+		}
+	}
+	for _, value := range values {
+		if err := walkFn(value); err != nil {
+			return err
+		}
 	}
 	return nil
 }
