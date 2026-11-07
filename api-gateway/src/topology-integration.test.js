@@ -158,6 +158,26 @@ test(
       await call('PATCH', `/links/${parent.id}/settings`, { bundle_id: parent.id }, 400)
       assert.equal((await call('GET', `/links/${parent.id}/detail`)).members.length, 2)
       const node = synced.topology.nodes.find((n) => n.device_id === a.id)
+      await call('PATCH', '/default/settings', { root_node_id: node.id })
+      assert.equal((await call('GET', '/default')).map.root_node_id, node.id)
+      await call('PATCH', '/default/settings', { root_node_id: '999999999' }, 400)
+      await call('PATCH', `/nodes/${node.id}/settings`, {
+        asset_kind: 'router',
+        asset_model: 'Test-Model',
+        asset_vendor: 'Test-Vendor',
+      })
+      const asset = (await call('GET', '/default')).nodes.find((n) => n.id === node.id)
+      assert.equal(asset.display_kind, 'router')
+      assert.equal(asset.asset_model, 'Test-Model')
+      assert.equal(asset.asset_source, 'manual')
+      await call('PATCH', `/links/${first.id}/lifecycle`, { lifecycle: 'history' })
+      synced = await syncTopologyMonitor(app, map.id)
+      assert.equal(synced.topology.links.find((l) => l.id === first.id).lifecycle, 'history')
+      assert.ok(
+        !Object.values(synced.topology.tree.parent_link).includes(first.id),
+        'history does not define current hierarchy',
+      )
+      await call('PATCH', `/links/${first.id}/lifecycle`, { lifecycle: 'current' })
       await call('PATCH', `/nodes/${node.id}/settings`, { position_locked: true, layer: 'core' })
       const saved = await call('PATCH', '/default/layout', {
         nodes: [{ id: node.id, x: 999, y: 999 }],

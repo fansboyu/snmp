@@ -16,6 +16,7 @@ import {
 } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
+import AppVersion from '../components/AppVersion.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -130,6 +131,7 @@ async function changePassword(): Promise<void> {
           </el-tooltip>
         </div>
       </div>
+      <div class="sidebar-version"><AppVersion :compact="sidebarCollapsed" /></div>
     </el-aside>
 
     <el-container>

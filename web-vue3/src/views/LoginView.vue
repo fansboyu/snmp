@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Lock, User } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
+import AppVersion from '../components/AppVersion.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -64,6 +65,7 @@ async function submit(): Promise<void> {
       </el-form>
 
       <el-alert class="login-tip" title="默认账号：admin / admin123" type="info" :closable="false" />
+      <div class="login-version"><AppVersion /></div>
     </el-card>
   </main>
 </template>

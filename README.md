@@ -1,8 +1,10 @@
 # SNMP Monitoring Platform
 
-当前发布版本：**v1.6.3**。本版完善自动拓扑发现：增加发现诊断、单设备邻居采集队列，弱名称匹配需人工确认，补充端口别名和部分证据合并；保留设备离线主动确认机制。完整变更与升级说明见 [v1.6.3 发布说明](docs/releases/v1.6.3.md)。
+当前发布版本：**v1.6.4**。本版增加分层拓扑、设备卡片、分支折叠、小地图、历史连接归档和双向流动效果，登录页与侧栏自动展示版本号。完整变更与升级说明见 [v1.6.4 发布说明](docs/releases/v1.6.4.md)。
 
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
+
+登录页和控制台侧栏底部显示前端版本号，构建时读取 `web-vue3/package.json` 的 `version`。菜单折叠后仍保留版本数字；后续升级修改项目版本并重新构建前端即可同步显示。
 
 ## 技术栈
 
@@ -99,7 +101,7 @@ docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp
 docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.3
+git checkout v1.6.4
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -1165,6 +1167,10 @@ go run .
 
 ### 网络拓扑增强
 
+拓扑支持“流动效果”开关：正常连接有新鲜有效采样且对应方向速率大于零时，蓝色短线沿 A→B、青色短线沿 B→A 移动。过期、零流量、异常及历史连接停止，编辑/隐藏标签页暂停，并尊重系统减少动态效果设置；动画速度固定，仅作方向示意，不代表逐包回放。
+
+新增参考园区拓扑的分层展示：指定根节点、按分支分配空间、正交圆角连线和两端端口标签；支持设备 SVG 卡片、分支折叠、路径高亮、小地图、搜索定位、浮动详情与流量模式。资产类型/厂商/型号可人工维护，接口概览不冒充物理面板。历史连接可归档或恢复，默认从主图隐藏。需执行迁移 `010_topology_presentation.sql`，详见 [拓扑分层展示说明](docs/拓扑分层展示说明.md)。
+
 拓扑现支持分协议邻居快照、双向 LLDP/CDP 物理连接去重、歧义人工确认、真实端口状态及过期提示；查看与编辑模式分离，状态增量刷新保留视图。点击链路可查看两端流量、证据和原有告警，并跳转现有设备/端口详情。支持设备分组筛选、层级布局预览、位置锁定、人工聚合成员和变更历史。新增数据库迁移 `008_topology_monitor.sql`，需先迁移再启动新 API/采集器，不增加容器。使用步骤、接口、数据保留和限制见 [网络拓扑改造说明](docs/网络拓扑改造说明.md)。
 
 ### Windows 离线发布包
@@ -1173,7 +1179,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.3` 导出七个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.4` 导出七个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 

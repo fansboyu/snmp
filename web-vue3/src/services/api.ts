@@ -324,6 +324,7 @@ export interface DiscoveryResult {
 }
 
 export interface TopologyMap {
+  root_node_id?:string|null
   id: string
   name: string
   description?: string | null
@@ -333,6 +334,12 @@ export interface TopologyMap {
 }
 
 export interface TopologyNode {
+  asset_kind?:string
+  asset_vendor?:string
+  asset_model?:string
+  display_kind?:string
+  asset_source?:string
+  interface_summary?:{total:number;up:number;down:number;fresh:boolean}
   position_locked?: boolean
   layer?: 'core' | 'aggregation' | 'access' | 'external'
   identity_key?: string | null
@@ -357,6 +364,9 @@ export interface TopologyNode {
 }
 
 export interface TopologyLink {
+  lifecycle?:'current'|'history'
+  retired_at?:string|null
+  retired_reason?:string
   id: string
   map_id: string
   source_node_id: string
@@ -385,6 +395,7 @@ export interface TopologyLink {
 }
 
 export interface TopologyData {
+  tree?:{parent:Record<string,string|null>;parent_link:Record<string,string>;depth:Record<string,number>;roots:string[];order:string[]}
   discovery?: TopologyDiscovery
   devices?: Array<Pick<Device, 'id' | 'name' | 'host' | 'enabled' | 'group_id' | 'group_name' | 'online_status'>>
   ports?: DeviceInterface[]
@@ -819,6 +830,8 @@ export interface TopologyChange {id:string;entity_type:string;entity_id:string;a
 export interface TopologyFlow {id:string;source:PortTrafficSummary|null;target:PortTrafficSummary|null}
 export const getTopologyHistory = (before?:string):Promise<TopologyChange[]> => request(`/api/topology/default/history${before?`?before=${before}`:''}`)
 export const getTopologyLayoutPreview = ():Promise<TopologyNode[]> => request('/api/topology/default/layout-preview')
+export const setTopologyRoot = (id:string|null):Promise<TopologyMap> => request('/api/topology/default/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({root_node_id:id})})
+export const setTopologyLifecycle = (id:string,lifecycle:'current'|'history'):Promise<TopologyLink> => request(`/api/topology/links/${id}/lifecycle`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({lifecycle})})
 export const getTopologyDetail = (id:string,range='1h',signal?:AbortSignal):Promise<TopologyDetail> => request(`/api/topology/links/${id}/detail?range=${range}`,{signal})
 export const getTopologyTraffic = (ids:string[],signal?:AbortSignal):Promise<TopologyFlow[]> => request('/api/topology/default/traffic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({link_ids:ids}),signal})
 export const setTopologyNode = (id:string,payload:Partial<TopologyNode>):Promise<TopologyNode> => request(`/api/topology/nodes/${id}/settings`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})

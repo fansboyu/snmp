@@ -61,7 +61,32 @@ export async function topologyMonitorRoutes(app, getMap) {
   app.get('/default/layout-preview', async () => {
     const map = await getMap(app)
     const data = await readTopologyMonitor(app.db, map.id)
-    return layoutTopology(data.nodes, data.links)
+    return layoutTopology(data.nodes, data.links, data.map.root_node_id)
+  })
+  app.patch('/default/settings', async (request) => {
+    const map = await getMap(app),
+      root = request.body?.root_node_id
+    if (root !== null && !id(root)) throw invalid('请选择有效根节点')
+    const result = await app.db.query(
+      `update topology_maps set root_node_id=$2,updated_at=now() where id=$1 and
+      ($2::bigint is null or exists(select 1 from topology_nodes where id=$2 and map_id=$1)) returning *`,
+      [map.id, root],
+    )
+    if (!result.rowCount) throw invalid('根节点不属于当前拓扑')
+    return result.rows[0]
+  })
+  app.patch('/links/:id/lifecycle', async (request) => {
+    const map = await getMap(app),
+      lifecycle = request.body?.lifecycle
+    if (!id(request.params.id) || !['current', 'history'].includes(lifecycle))
+      throw invalid('无效连接状态')
+    const result = await app.db.query(
+      `update topology_links set lifecycle=$3,retired_at=case when $3='history' then now() else null end,
+      retired_reason=case when $3='history' then '人工归档：保留证据，默认主图隐藏' else '' end where id=$1 and map_id=$2 returning *`,
+      [request.params.id, map.id, lifecycle],
+    )
+    if (!result.rowCount) throw Object.assign(new Error('链路不存在'), { statusCode: 404 })
+    return result.rows[0]
   })
   app.patch('/nodes/:id/settings', async (request) => {
     const body = request.body || {}
@@ -70,10 +95,28 @@ export async function topologyMonitorRoutes(app, getMap) {
       throw invalid('无效层级')
     if (body.position_locked !== undefined && typeof body.position_locked !== 'boolean')
       throw invalid('无效锁定设置')
+    if (
+      body.asset_kind !== undefined &&
+      !['auto', 'device', 'router', 'switch', 'firewall', 'ac', 'ap', 'cloud', 'unknown'].includes(
+        body.asset_kind,
+      )
+    )
+      throw invalid('无效设备类型')
+    for (const key of ['asset_model', 'asset_vendor'])
+      if (body[key] !== undefined && (typeof body[key] !== 'string' || body[key].length > 100))
+        throw invalid('资产字段最多 100 字符')
     const result = await app.db.query(
       `update topology_nodes set layer=coalesce($2,layer),position_locked=coalesce($3,position_locked),
-      label=coalesce($4,label),updated_at=now() where id=$1 returning *`,
-      [request.params.id, body.layer, body.position_locked, body.label?.trim().slice(0, 200)],
+      label=coalesce($4,label),asset_kind=coalesce($5,asset_kind),asset_vendor=coalesce($6,asset_vendor),asset_model=coalesce($7,asset_model),updated_at=now() where id=$1 returning *`,
+      [
+        request.params.id,
+        body.layer,
+        body.position_locked,
+        body.label?.trim().slice(0, 200),
+        body.asset_kind,
+        body.asset_vendor?.trim(),
+        body.asset_model?.trim(),
+      ],
     )
     if (!result.rowCount) throw Object.assign(new Error('节点不存在'), { statusCode: 404 })
     return result.rows[0]

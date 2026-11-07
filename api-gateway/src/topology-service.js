@@ -5,6 +5,7 @@ import {
   deriveLinkState,
 } from './topology-model.js'
 import { discoveryDiagnostics } from './topology-discovery.js'
+import { topologyForest } from './topology-layout.js'
 
 export async function topologyInventory(db) {
   const tasks = [
@@ -80,6 +81,25 @@ export async function readTopologyMonitor(db, mapId) {
       device_status: device?.online_status ?? 'unknown',
       last_sample_at: device?.last_seen_at,
       probe_reason: device?.probe_reason,
+      display_kind:
+        n.asset_kind === 'auto'
+          ? n.node_type === 'network'
+            ? 'cloud'
+            : device
+              ? 'device'
+              : 'unknown'
+          : n.asset_kind,
+      asset_source:
+        n.asset_model || n.asset_vendor || n.asset_kind !== 'auto' ? 'manual' : 'unknown',
+      interface_summary: (() => {
+        const p = inventory.ports.filter((p) => String(p.device_id) === String(n.device_id))
+        return {
+          total: p.length,
+          up: p.filter((p) => ['1', 'up'].includes(String(p.oper_status))).length,
+          down: p.filter((p) => ['2', 'down'].includes(String(p.oper_status))).length,
+          fresh: p.length > 0 && p.every((p) => Date.now() - Date.parse(p.last_seen_at) < 180000),
+        }
+      })(),
     }
   })
   const enrichedLinks = links.rows.map((l) => {
@@ -112,7 +132,9 @@ export async function readTopologyMonitor(db, mapId) {
     }
   })
   for (const parent of enrichedLinks) {
-    const members = enrichedLinks.filter((l) => String(l.bundle_id) === String(parent.id))
+    const members = enrichedLinks.filter(
+      (l) => l.lifecycle !== 'history' && String(l.bundle_id) === String(parent.id),
+    )
     if (!members.length) continue
     parent.member_count = members.length
     parent.status = members.every((l) => l.status === 'up')
@@ -130,6 +152,7 @@ export async function readTopologyMonitor(db, mapId) {
     map: map.rows[0],
     nodes: enrichedNodes,
     links: enrichedLinks,
+    tree: topologyForest(enrichedNodes, enrichedLinks, map.rows[0]?.root_node_id),
     scans: inventory.scans,
     neighbors: inventory.neighbors,
     devices: inventory.devices,
@@ -168,6 +191,8 @@ export async function syncTopologyMonitor(app, mapId) {
       )
         continue
       const key = physicalIdentity(row)
+      if (existingLinks.rows.some((l) => l.lifecycle === 'history' && l.physical_key === key))
+        continue
       if (suppressed.rows.some((s) => s.physical_key === key)) continue
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(row)
@@ -256,6 +281,7 @@ export async function syncTopologyMonitor(app, mapId) {
       const matched = existingLinks.rows.filter(
         (l) =>
           l.auto_discovered &&
+          l.lifecycle !== 'history' &&
           !consumed.has(String(l.id)) &&
           (l.physical_key === key ||
             ids.includes(String(l.neighbor_id)) ||

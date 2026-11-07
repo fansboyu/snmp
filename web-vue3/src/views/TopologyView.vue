@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { Graph } from '@antv/x6'
+import { deviceIcon, assetNames } from '../services/topology-art'
 import type { EChartsOption } from 'echarts'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import EChartCard from '../components/EChartCard.vue'
@@ -22,6 +23,8 @@ import {
   setTopologyLink,
   bindTopologyNeighbor,
   requestTopologyScan,
+  setTopologyRoot,
+  setTopologyLifecycle,
   type TopologyData,
   type TopologyNode,
   type TopologyLink,
@@ -33,6 +36,148 @@ import {
 
 const router = useRouter()
 const canvas = ref<HTMLDivElement>()
+const showDetails = ref(false),
+  showHistoryLinks = ref(false),
+  flowMode = ref(false),
+  showMap = ref(true)
+const movingTraffic = ref(true),
+  pageVisible = ref(!document.hidden)
+function visibilityChanged() {
+  pageVisible.value = !document.hidden
+  render()
+  if (pageVisible.value) void refreshTraffic()
+}
+const folded = ref<Set<string>>(new Set()),
+  zoomLevel = ref(1),
+  highlightPath = ref(true)
+const miniNodes = ref<
+  Array<{ id: string; x: number; y: number; width: number; height: number; status?: string }>
+>([])
+const viewport = ref({ x: 0, y: 0, width: 600, height: 400 })
+function updateViewport() {
+  if (!canvas.value || !graph) return
+  const r = canvas.value.getBoundingClientRect()
+  const v = graph.clientToLocal({ x: r.left, y: r.top, width: r.width, height: r.height })
+  viewport.value = { x: v.x, y: v.y, width: v.width, height: v.height }
+}
+const mapBounds = computed(() => {
+  const ns = miniNodes.value
+  if (!ns.length) return { x: 0, y: 0, width: 600, height: 400 }
+  const x = Math.min(...ns.map((n) => n.x)) - 40,
+    y = Math.min(...ns.map((n) => n.y)) - 40
+  return {
+    x,
+    y,
+    width: Math.max(...ns.map((n) => n.x + n.width)) - x + 40,
+    height: Math.max(...ns.map((n) => n.y + n.height)) - y + 40,
+  }
+})
+function miniNavigate(event: MouseEvent) {
+  const r = (event.currentTarget as SVGSVGElement).getBoundingClientRect(),
+    b = mapBounds.value
+  graph?.centerPoint(
+    b.x + ((event.clientX - r.left) / r.width) * b.width,
+    b.y + ((event.clientY - r.top) / r.height) * b.height,
+  )
+}
+const hiddenBranches = computed(() => {
+  const hidden = new Set<string>(),
+    parent = data.value?.tree?.parent || {}
+  for (const id of Object.keys(parent)) {
+    let cursor = parent[id]
+    const visited = new Set<string>()
+    while (cursor && !visited.has(cursor)) {
+      if (folded.value.has(cursor)) {
+        hidden.add(id)
+        break
+      }
+      visited.add(cursor)
+      cursor = parent[cursor]
+    }
+  }
+  return hidden
+})
+const pathLinks = computed(() => {
+  const ids = new Set<string>()
+  if (!highlightPath.value || !selectedNode.value) return ids
+  let id = String(selectedNode.value.id)
+  const tree = data.value?.tree,
+    seen = new Set<string>()
+  while (tree?.parent[id] && !seen.has(id)) {
+    seen.add(id)
+    ids.add(tree.parent_link[id])
+    id = tree.parent[id]!
+  }
+  return ids
+})
+function toggleBranch() {
+  const id = selectedId.value
+  const next = new Set(folded.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  folded.value = next
+  render()
+}
+function branchStats(root: string) {
+  const parent = data.value?.tree?.parent || {},
+    descendants = new Set<string>()
+  for (const id of Object.keys(parent)) {
+    let p = parent[id]
+    const visited = new Set<string>()
+    while (p && !visited.has(p)) {
+      if (p === root) {
+        descendants.add(id)
+        break
+      }
+      visited.add(p)
+      p = parent[p]
+    }
+  }
+  return {
+    total: descendants.size,
+    abnormal: nodes.value.filter(
+      (n) =>
+        descendants.has(String(n.id)) &&
+        ['offline', 'collection_error'].includes(n.device_status || ''),
+    ).length,
+  }
+}
+function unfoldAll() {
+  folded.value = new Set()
+  render()
+}
+function locateDevice() {
+  const hit = nodes.value.find((n) =>
+    `${n.label} ${n.device_host || ''}`.toLowerCase().includes(keyword.value.trim().toLowerCase()),
+  )
+  if (!hit || !keyword.value.trim()) return
+  folded.value = new Set()
+  keyword.value = ''
+  group.value = 'all'
+  select('node', String(hit.id))
+  nextTick(() => {
+    const cell = graph?.getCellById(`node-${hit.id}`)
+    if (cell) graph?.centerCell(cell)
+  })
+}
+async function changeRoot(id: string) {
+  await action(async () => {
+    if (dirty.value) throw Error('请先保存布局')
+    await setTopologyRoot(id || null)
+    await load(true)
+    ElMessage.success('根节点已保存，点击自动布局预览查看新布局')
+  })
+}
+async function changeLifecycle() {
+  await action(async () => {
+    if (!selectedLink.value) return
+    await setTopologyLifecycle(
+      selectedId.value,
+      selectedLink.value.lifecycle === 'history' ? 'current' : 'history',
+    )
+    selectedId.value = ''
+    await load(true)
+  })
+}
 const data = ref<TopologyData | null>(null)
 const editing = ref(false),
   dirty = ref(false),
@@ -82,7 +227,14 @@ async function scanDevice(id: string) {
 const nodeDevice = ref(''),
   customLabel = ref('')
 const linkForm = reactive({ source_node_id: '', target_node_id: '', label: '' })
-const nodeForm = reactive({ label: '', layer: 'access', position_locked: false })
+const nodeForm = reactive({
+  label: '',
+  layer: 'access',
+  position_locked: false,
+  asset_kind: 'auto',
+  asset_vendor: '',
+  asset_model: '',
+})
 const bindingForm = reactive({
   source_interface_id: '',
   target_interface_id: '',
@@ -149,6 +301,7 @@ const selectedLink = computed(() =>
 const visibleNodes = computed(() =>
   nodes.value.filter(
     (n) =>
+      !hiddenBranches.value.has(String(n.id)) &&
       (group.value === 'all' || n.group_name === group.value) &&
       `${n.label} ${n.device_host || ''}`
         .toLowerCase()
@@ -160,6 +313,7 @@ const visibleLinks = computed(() => {
   return links.value.filter(
     (l) =>
       ids.has(String(l.source_node_id)) &&
+      (showHistoryLinks.value || l.lifecycle !== 'history') &&
       ids.has(String(l.target_node_id)) &&
       (!collapseBundles.value ||
         !l.bundle_id ||
@@ -245,7 +399,10 @@ async function load(force = false) {
   }
 }
 function rate(link: TopologyLink): { in: number | null; out: number | null; hint: string } {
-  const members = links.value.filter((l) => String(l.bundle_id) === String(link.id))
+  if (link.lifecycle === 'history') return { in: null, out: null, hint: '历史连接，不显示当前速率' }
+  const members = links.value.filter(
+    (l) => l.lifecycle !== 'history' && String(l.bundle_id) === String(link.id),
+  )
   if (members.length && !link.source_interface_id && !link.target_interface_id) {
     const values = members.map((m) => {
       const r = rate(m)
@@ -259,7 +416,12 @@ function rate(link: TopologyLink): { in: number | null; out: number | null; hint
   }
   const flow = flows.value[String(link.id)],
     summary = flow?.source || flow?.target
-  if (!summary || summary.data_status !== 'fresh')
+  if (
+    !summary ||
+    summary.data_status !== 'fresh' ||
+    !summary.sampled_at ||
+    Date.now() - Date.parse(summary.sampled_at) > 180000
+  )
     return {
       in: null,
       out: null,
@@ -284,18 +446,36 @@ function render() {
   const visible = new Set(visibleNodes.value.map((n) => String(n.id)))
   for (const n of nodes.value) {
     let cell = graph.getCellById(`node-${n.id}`)
-    const label = `${n.position_locked ? '🔒 ' : ''}${n.label}\n${n.device_host || layerNames[n.layer || 'access']} · ${statusNames[n.device_status || 'unknown']}`
+    const width = Math.max(220, Number(n.width)),
+      height = Math.max(136, Number(n.height))
     if (!cell)
       cell = graph.addNode({
         id: `node-${n.id}`,
         shape: 'rect',
         x: Number(n.x),
         y: Number(n.y),
-        width: Number(n.width),
-        height: Number(n.height),
+        width,
+        height,
+        markup: [
+          { tagName: 'rect', selector: 'body' },
+          { tagName: 'image', selector: 'icon' },
+          { tagName: 'circle', selector: 'state' },
+          { tagName: 'text', selector: 'name' },
+          { tagName: 'text', selector: 'model' },
+          { tagName: 'text', selector: 'meta' },
+          { tagName: 'text', selector: 'summary' },
+        ],
         data: { backendId: String(n.id) },
         ports: {
           groups: {
+            top: {
+              position: 'top',
+              attrs: { circle: { r: 4, magnet: true, stroke: '#2563eb', fill: '#fff' } },
+            },
+            bottom: {
+              position: 'bottom',
+              attrs: { circle: { r: 4, magnet: true, stroke: '#2563eb', fill: '#fff' } },
+            },
             left: {
               position: 'left',
               attrs: { circle: { r: 4, magnet: true, stroke: '#2563eb', fill: '#fff' } },
@@ -306,24 +486,73 @@ function render() {
             },
           },
           items: [
+            { id: 'top', group: 'top' },
+            { id: 'bottom', group: 'bottom' },
             { id: 'left', group: 'left' },
             { id: 'right', group: 'right' },
           ],
         },
       })
     cell.attr({
+      text: { refX: 0, refY: 0, textVerticalAnchor: 'middle' },
       body: {
         rx: 9,
         ry: 9,
-        fill: n.device_id ? '#eff6ff' : '#f8fafc',
+        fill: '#ffffff',
+        strokeDasharray: n.device_id ? '' : '5 4',
         stroke: color(n.device_status),
         strokeWidth: selectedId.value === String(n.id) && selectedKind.value === 'node' ? 3 : 1.8,
       },
-      label: {
-        text: label,
+      icon: {
+        href: deviceIcon(n.display_kind || 'device'),
+        x: width / 2 - 34,
+        y: 7,
+        width: 68,
+        height: 46,
+      },
+      state: { cx: width - 14, cy: 14, r: 4.5, fill: color(n.device_status) },
+      name: {
+        text: `${n.position_locked ? '🔒 ' : ''}${n.label}${folded.value.has(String(n.id)) ? ' [+]' : ''}`,
+        x: width / 2,
+        y: 68,
+        textAnchor: 'middle',
         fill: '#172033',
         fontSize: 12,
-        textWrap: { width: -12, height: -10, ellipsis: true },
+        fontWeight: 600,
+        textWrap: { width: width - 22, height: 18, ellipsis: true },
+      },
+      model: {
+        text: zoomLevel.value < 0.6 ? '' : n.asset_model || assetNames[n.display_kind || 'device'],
+        x: width / 2,
+        y: 87,
+        textAnchor: 'middle',
+        fill: '#64748b',
+        fontSize: 11,
+      },
+      meta: {
+        text:
+          zoomLevel.value < 0.75
+            ? ''
+            : `${n.device_host || '未纳管 / 人工节点'} · ${statusNames[n.device_status || 'unknown']}`,
+        x: width / 2,
+        y: 105,
+        textAnchor: 'middle',
+        fill: '#64748b',
+        fontSize: 10,
+      },
+      summary: {
+        text: folded.value.has(String(n.id))
+          ? `已折叠 ${branchStats(String(n.id)).total} 台 · 异常 ${branchStats(String(n.id)).abnormal} 台`
+          : zoomLevel.value < 0.85
+            ? ''
+            : n.interface_summary?.total
+              ? `接口概览 ${n.interface_summary.up} UP / ${n.interface_summary.down} DOWN${n.interface_summary.fresh ? '' : ' · 过期'}`
+              : '接口数据待补充',
+        x: width / 2,
+        y: 123,
+        textAnchor: 'middle',
+        fill: n.interface_summary?.fresh ? '#0f9f82' : '#94a3b8',
+        fontSize: 10,
       },
     })
     if (cell.isNode())
@@ -349,51 +578,158 @@ function render() {
         data: { backendId: String(l.id) },
         zIndex: 0,
         connector: { name: 'rounded' },
+        markup: [
+          {
+            tagName: 'path',
+            selector: 'wrap',
+            groupSelector: 'lines',
+            attrs: {
+              fill: 'none',
+              stroke: 'transparent',
+              cursor: 'pointer',
+              strokeLinecap: 'round',
+            },
+          },
+          {
+            tagName: 'path',
+            selector: 'line',
+            groupSelector: 'lines',
+            attrs: { fill: 'none', pointerEvents: 'none' },
+          },
+          {
+            tagName: 'path',
+            selector: 'flowOut',
+            attrs: { fill: 'none', pointerEvents: 'none', class: 'traffic-flow traffic-flow--out' },
+          },
+          {
+            tagName: 'path',
+            selector: 'flowIn',
+            attrs: { fill: 'none', pointerEvents: 'none', class: 'traffic-flow traffic-flow--in' },
+          },
+        ],
       })
     if (!edge.isEdge()) continue
-    edge.setSource({ cell: `node-${l.source_node_id}` })
-    edge.setTarget({ cell: `node-${l.target_node_id}` })
+    const a = graph.getCellById(`node-${l.source_node_id}`),
+      b = graph.getCellById(`node-${l.target_node_id}`)
+    const downward = !!(a?.isNode() && b?.isNode() && a.getBBox().center.y <= b.getBBox().center.y)
+    const traffic = rate(l)
+    const animate =
+      movingTraffic.value &&
+      pageVisible.value &&
+      !editing.value &&
+      l.status === 'up' &&
+      l.lifecycle !== 'history' &&
+      visibleEdges.has(String(l.id))
+    edge.setSource({ cell: `node-${l.source_node_id}`, port: downward ? 'bottom' : 'top' })
+    edge.setTarget({ cell: `node-${l.target_node_id}`, port: downward ? 'top' : 'bottom' })
     edge.attr({
+      flowOut: {
+        connection: true,
+        stroke: '#3b82f6',
+        strokeWidth: 3.5,
+        strokeDasharray: '6 46',
+        strokeLinecap: 'round',
+        display: animate && traffic.out != null && traffic.out > 0 ? '' : 'none',
+      },
+      flowIn: {
+        connection: true,
+        stroke: '#06b6d4',
+        strokeWidth: 3.5,
+        strokeDasharray: '6 46',
+        strokeLinecap: 'round',
+        display: animate && traffic.in != null && traffic.in > 0 ? '' : 'none',
+      },
       line: {
-        stroke: color(l.status),
-        strokeWidth: l.bundle_id ? 1.5 : 2.2,
-        strokeDasharray: ['stale', 'unconfirmed', 'unknown'].includes(l.status) ? '6 4' : '',
+        stroke:
+          l.lifecycle === 'history'
+            ? '#cbd5e1'
+            : pathLinks.value.has(String(l.id))
+              ? '#2563eb'
+              : color(l.status),
+        strokeWidth: pathLinks.value.has(String(l.id)) ? 3.5 : l.bundle_id ? 1.5 : 2,
+        strokeDasharray:
+          l.lifecycle === 'history' || ['stale', 'unconfirmed', 'unknown'].includes(l.status)
+            ? '6 4'
+            : '',
         targetMarker: null,
       },
     })
     const siblings = pairs.get([l.source_node_id, l.target_node_id].sort().join(':')) || []
+    const centerText =
+      l.lifecycle === 'history'
+        ? '历史连接'
+        : flowMode.value
+          ? edgeText(l)
+          : ['down', 'stale', 'unconfirmed', 'degraded'].includes(l.status)
+            ? statusNames[l.status]
+            : ''
     edge.setLabels([
+      ...(zoomLevel.value >= 0.65
+        ? [
+            {
+              position: { distance: 0.12, offset: 14 },
+              attrs: {
+                label: {
+                  text: l.source_interface_name || 'A 端口待确认',
+                  fontSize: 10,
+                  fill: '#475569',
+                },
+                body: { fill: '#fff', stroke: 'none' },
+              },
+            },
+            {
+              position: { distance: 0.88, offset: -14 },
+              attrs: {
+                label: {
+                  text: l.target_interface_name || 'B 端口待确认',
+                  fontSize: 10,
+                  fill: '#475569',
+                },
+                body: { fill: '#fff', stroke: 'none' },
+              },
+            },
+          ]
+        : []),
       {
         position: {
           distance:
             siblings.length > 1 ? 0.32 + (0.36 * siblings.indexOf(l)) / (siblings.length - 1) : 0.5,
         },
         attrs: {
-          label: { text: edgeText(l), fontSize: 10, fill: '#334155' },
-          body: { fill: '#ffffff', stroke: '#e2e8f0' },
+          label: { text: zoomLevel.value >= 0.6 ? centerText : '', fontSize: 10, fill: '#334155' },
+          body: { fill: centerText ? '#ffffff' : 'none', stroke: 'none' },
         },
       },
     ])
-    const a = graph.getCellById(`node-${l.source_node_id}`),
-      b = graph.getCellById(`node-${l.target_node_id}`)
-    if (siblings.length > 1 && a?.isNode() && b?.isNode()) {
+    if (a?.isNode() && b?.isNode()) {
       const ca = a.getBBox().center,
         cb = b.getBBox().center,
-        offset = (siblings.indexOf(l) - (siblings.length - 1) / 2) * 65
-      const distance = Math.hypot(cb.x - ca.x, cb.y - ca.y) || 1
+        offset = (siblings.indexOf(l) - (siblings.length - 1) / 2) * 24
+      const middle = (ca.y + cb.y) / 2 + offset
       edge.setVertices([
-        {
-          x: (ca.x + cb.x) / 2 - ((cb.y - ca.y) / distance) * offset,
-          y: (ca.y + cb.y) / 2 + ((cb.x - ca.x) / distance) * offset,
-        },
+        { x: ca.x, y: middle },
+        { x: cb.x, y: middle },
       ])
     } else edge.setVertices([])
     visibleEdges.has(String(l.id)) ? edge.show() : edge.hide()
   }
+  miniNodes.value = visibleNodes.value.map((n) => {
+    const cell = graph?.getCellById(`node-${n.id}`)
+    const box = cell?.isNode() ? cell.getBBox() : null
+    return {
+      id: String(n.id),
+      x: box?.x ?? Number(n.x),
+      y: box?.y ?? Number(n.y),
+      width: box?.width || 220,
+      height: box?.height || 136,
+      status: n.device_status,
+    }
+  })
   rendering = false
 }
 async function refreshTraffic() {
   flowAbort?.abort()
+  if (!flowMode.value && !movingTraffic.value) return
   const controller = new AbortController()
   flowAbort = controller
   const relevant = new Set(visibleLinks.value.map((l) => String(l.id)))
@@ -441,6 +777,7 @@ async function loadDetail() {
   }
 }
 function select(kind: string, id: string) {
+  showDetails.value = true
   selectedKind.value = kind
   selectedId.value = id
   detail.value = null
@@ -451,6 +788,9 @@ function select(kind: string, id: string) {
         label: n.label,
         layer: n.layer || 'access',
         position_locked: !!n.position_locked,
+        asset_kind: n.asset_kind || 'auto',
+        asset_vendor: n.asset_vendor || '',
+        asset_model: n.asset_model || '',
       })
   } else {
     const l = selectedLink.value
@@ -567,6 +907,9 @@ async function saveNode() {
       label: nodeForm.label,
       layer: nodeForm.layer as TopologyNode['layer'],
       position_locked: nodeForm.position_locked,
+      asset_kind: nodeForm.asset_kind,
+      asset_vendor: nodeForm.asset_vendor,
+      asset_model: nodeForm.asset_model,
     })
     await load(true)
     ElMessage.success('节点设置已保存')
@@ -664,6 +1007,10 @@ watch([group, keyword, collapseBundles], () => {
   render()
   void refreshTraffic()
 })
+watch([showHistoryLinks, flowMode, movingTraffic, highlightPath], () => {
+  render()
+  void refreshTraffic()
+})
 watch(
   () => neighborForm.device,
   () => {
@@ -671,12 +1018,13 @@ watch(
   },
 )
 onMounted(async () => {
+  document.addEventListener('visibilitychange', visibilityChanged)
   await nextTick()
   graph = new Graph({
     container: canvas.value!,
     autoResize: true,
-    grid: { visible: true, size: 16 },
-    background: { color: '#f8fafc' },
+    grid: { visible: false, size: 16 },
+    background: { color: '#f1f4f7' },
     panning: true,
     mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'], minScale: 0.2, maxScale: 2 },
     interacting: (cell) =>
@@ -697,6 +1045,7 @@ onMounted(async () => {
     select(cell.isNode() ? 'node' : 'link', String(cell.getData()?.backendId || '')),
   )
   graph.on('blank:click', () => {
+    if (!editing.value) showDetails.value = false
     selectedId.value = ''
     selectedKind.value = ''
     detailAbort?.abort()
@@ -705,6 +1054,13 @@ onMounted(async () => {
   graph.on('node:change:position', () => {
     if (!rendering && editing.value) dirty.value = true
   })
+  graph.on('node:moved', () => render())
+  graph.on('scale', ({ sx }) => {
+    zoomLevel.value = sx
+    render()
+    updateViewport()
+  })
+  graph.on('translate', () => updateViewport())
   graph.on('edge:connected', ({ edge }) => {
     if (rendering || edge.getData()?.backendId || !editing.value) return
     void action(async () => {
@@ -724,6 +1080,14 @@ onMounted(async () => {
   await load(true)
   graph.zoomToFit({ padding: 40, maxScale: 1 })
   timer = setInterval(() => {
+    // Expire motion even when the user has disabled automatic data refresh.
+    if (movingTraffic.value && !document.hidden)
+      for (const l of visibleLinks.value) {
+        const r = rate(l),
+          edge = graph?.getCellById(`link-${l.id}`)
+        if (r.out == null || r.out <= 0) edge?.attr('flowOut/display', 'none')
+        if (r.in == null || r.in <= 0) edge?.attr('flowIn/display', 'none')
+      }
     const pending = (data.value?.discovery?.summary.pending || 0) > 0
     if (
       (autoRefresh.value || pending) &&
@@ -737,6 +1101,7 @@ onMounted(async () => {
   }, 5000)
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('visibilitychange', visibilityChanged)
   disposed = true
   loadSequence++
   detailSequence++
@@ -813,6 +1178,17 @@ watch(maximized, async () => {
           :label="g"
           :value="g" /></el-select
       ><el-checkbox v-model="collapseBundles">折叠聚合成员</el-checkbox
+      ><el-checkbox v-model="showHistoryLinks">显示历史连接</el-checkbox
+      ><el-checkbox v-model="flowMode">流量模式</el-checkbox
+      ><el-checkbox v-model="movingTraffic">流动效果</el-checkbox
+      ><span
+        v-if="movingTraffic"
+        class="flow-hint"
+        title="固定速度的方向示意，不代表逐包回放；仅新鲜有效采样且链路正常时显示。入方向朝 A 端，出方向朝 B 端。"
+        >蓝 A→B · 青 B→A（有效采样时流动）</span
+      ><el-checkbox v-model="showMap">小地图</el-checkbox
+      ><el-button @click="locateDevice">定位设备</el-button
+      ><el-button v-if="folded.size" @click="unfoldAll">展开全部分支</el-button
       ><el-button @click="fitView">适配视图</el-button
       ><span>{{ visibleNodes.length }} 节点 / {{ visibleLinks.length }} 链路</span
       ><span class="legend"
@@ -822,6 +1198,16 @@ watch(maximized, async () => {
       >
     </div>
     <div v-if="editing" class="edit-bar">
+      <el-select
+        :model-value="String(data?.map.root_node_id || '')"
+        clearable
+        placeholder="自动选择根节点"
+        style="width: 220px"
+        :disabled="dirty"
+        @change="changeRoot"
+      >
+        <el-option v-for="n in nodes" :key="n.id" :value="String(n.id)" :label="n.label" />
+      </el-select>
       <el-button :loading="busy" @click="sync">同步发现结果</el-button
       ><el-button @click="previewLayout">自动布局预览</el-button
       ><el-button type="primary" :disabled="!dirty" @click="saveLayout">保存布局</el-button
@@ -832,11 +1218,56 @@ watch(maximized, async () => {
     <div class="topology-workspace">
       <div class="topology-canvas-wrap">
         <div ref="canvas" class="topology-canvas" />
+        <svg
+          v-if="showMap && miniNodes.length"
+          class="topology-minimap"
+          :viewBox="`${mapBounds.x} ${mapBounds.y} ${mapBounds.width} ${mapBounds.height}`"
+          preserveAspectRatio="none"
+          aria-label="拓扑小地图，点击定位"
+          @click="miniNavigate"
+        >
+          <title>点击小地图定位画布</title>
+          <template v-for="l in visibleLinks" :key="l.id">
+            <line
+              v-if="
+                miniNodes.find((n) => n.id === String(l.source_node_id)) &&
+                miniNodes.find((n) => n.id === String(l.target_node_id))
+              "
+              :x1="miniNodes.find((n) => n.id === String(l.source_node_id))!.x + 110"
+              :y1="miniNodes.find((n) => n.id === String(l.source_node_id))!.y + 68"
+              :x2="miniNodes.find((n) => n.id === String(l.target_node_id))!.x + 110"
+              :y2="miniNodes.find((n) => n.id === String(l.target_node_id))!.y + 68"
+              stroke="#94a3b8"
+              :stroke-width="Math.max(2, mapBounds.width / 400)"
+            />
+          </template>
+          <rect
+            v-for="n in miniNodes"
+            :key="n.id"
+            :x="n.x"
+            :y="n.y"
+            :width="n.width"
+            :height="n.height"
+            :fill="color(n.status)"
+            rx="8"
+          />
+          <rect
+            :x="viewport.x"
+            :y="viewport.y"
+            :width="viewport.width"
+            :height="viewport.height"
+            fill="#2563eb"
+            fill-opacity="0.05"
+            stroke="#2563eb"
+            :stroke-width="Math.max(2, mapBounds.width / 200)"
+          />
+        </svg>
         <div v-if="!nodes.length" class="canvas-empty">
           <el-empty description="尚无拓扑，进入编辑模式添加设备或同步发现结果" />
         </div>
       </div>
-      <aside class="topology-sidebar">
+      <aside v-show="editing || showDetails" class="topology-sidebar">
+        <el-button v-if="!editing" @click="showDetails = false">关闭详情</el-button>
         <el-card v-if="editing" shadow="never"
           ><template #header>添加元素</template
           ><el-select v-model="nodeDevice" filterable clearable placeholder="选择已纳管设备"
@@ -874,6 +1305,38 @@ watch(maximized, async () => {
           <p>{{ selectedNode.device_host || '未纳管 / 自定义节点' }}</p>
           <p>最后采集：{{ localTime(selectedNode.last_sample_at) }}</p>
           <p>{{ selectedNode.probe_reason }}</p>
+          <p>
+            设备类型：{{ assetNames[selectedNode.display_kind || 'device'] }} · 资产信息：{{
+              selectedNode.asset_source === 'manual' ? '人工维护' : '待补充'
+            }}
+          </p>
+          <p v-if="selectedNode.asset_model">
+            型号：{{ selectedNode.asset_model }} · {{ selectedNode.asset_vendor || '厂商待补充' }}
+          </p>
+          <p>
+            接口概览（包含逻辑接口，不代表物理面板）：{{
+              selectedNode.interface_summary?.total || 0
+            }}
+            个
+          </p>
+          <el-checkbox v-model="highlightPath">高亮到根节点的展示路径</el-checkbox>
+          <p>展示路径用于阅读层级，不代表实际转发或路由路径；其他上联仍保留。</p>
+          <el-button
+            v-if="Object.values(data?.tree?.parent || {}).includes(String(selectedNode.id))"
+            @click="toggleBranch"
+            >{{ folded.has(String(selectedNode.id)) ? '展开下属分支' : '折叠下属分支' }}</el-button
+          >
+          <p v-if="folded.has(String(selectedNode.id))">
+            当前折叠共隐藏 {{ hiddenBranches.size }} 个节点；其中
+            {{
+              nodes.filter(
+                (n) =>
+                  hiddenBranches.has(String(n.id)) &&
+                  ['offline', 'collection_error'].includes(n.device_status || ''),
+              ).length
+            }}
+            个离线或采集异常。折叠不改变监控和告警。
+          </p>
           <el-button
             v-if="selectedNode.device_id"
             type="primary"
@@ -889,12 +1352,31 @@ watch(maximized, async () => {
                 :value="key"
                 :label="label" /></el-select
             ><el-checkbox v-model="nodeForm.position_locked">锁定节点位置</el-checkbox
+            ><el-select v-model="nodeForm.asset_kind" placeholder="设备图标类型"
+              ><el-option v-for="(label, key) in assetNames" :key="key" :label="label" :value="key"
+            /></el-select>
+            <el-input
+              v-model="nodeForm.asset_vendor"
+              maxlength="100"
+              placeholder="厂商（人工维护）"
+            />
+            <el-input
+              v-model="nodeForm.asset_model"
+              maxlength="100"
+              placeholder="型号（人工维护，未知时留空）"
+            />
             ><el-button @click="saveNode">保存节点设置</el-button></template
           ></el-card
         >
         <el-card v-if="selectedLink" v-loading="detailLoading" shadow="never"
           ><template #header>链路详情</template>
           <h3>{{ selectedLink.label || '未命名链路' }}</h3>
+          <p v-if="selectedLink.lifecycle === 'history'">
+            历史连接 · {{ selectedLink.retired_reason }} · {{ localTime(selectedLink.retired_at) }}
+          </p>
+          <el-button v-if="editing" type="warning" plain @click="changeLifecycle">{{
+            selectedLink.lifecycle === 'history' ? '恢复到当前拓扑' : '归档为历史连接'
+          }}</el-button>
           <el-tag :type="tagType(selectedLink.status)">{{
             statusNames[selectedLink.status]
           }}</el-tag>
@@ -1164,6 +1646,38 @@ watch(maximized, async () => {
 </template>
 
 <style scoped>
+.flow-hint {
+  color: #64748b;
+  font-size: 12px;
+}
+:deep(.traffic-flow--out) {
+  animation: traffic-forward 2s linear infinite;
+}
+:deep(.traffic-flow--in) {
+  animation: traffic-backward 2.6s linear infinite;
+}
+@keyframes traffic-forward {
+  from {
+    stroke-dashoffset: 0;
+  }
+  to {
+    stroke-dashoffset: -52;
+  }
+}
+@keyframes traffic-backward {
+  from {
+    stroke-dashoffset: 26;
+  }
+  to {
+    stroke-dashoffset: 78;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  :deep(.traffic-flow) {
+    animation: none;
+    display: none;
+  }
+}
 .topology-tools,
 .topology-filter,
 .edit-bar {
@@ -1182,8 +1696,9 @@ watch(maximized, async () => {
   border-top: 1px solid #e2e8f0;
 }
 .topology-workspace {
+  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 370px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .topology-canvas-wrap {
@@ -1198,12 +1713,35 @@ watch(maximized, async () => {
   width: 100%;
 }
 .topology-sidebar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: min(370px, 100%);
+  z-index: 5;
+  background: #f8fafc;
+  padding: 10px;
+  box-sizing: border-box;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  box-shadow: -8px 0 28px #0f172a12;
   display: grid;
   grid-auto-rows: max-content;
   gap: 14px;
   align-content: start;
   max-height: calc(100vh - 245px);
   overflow: auto;
+}
+.topology-minimap {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  width: 190px;
+  height: 115px;
+  background: #ffffffef;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px #0f172a10;
+  cursor: crosshair;
 }
 .topology-sidebar :deep(.el-card__body) {
   display: grid;

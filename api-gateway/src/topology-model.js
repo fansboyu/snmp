@@ -215,46 +215,4 @@ export function deriveLinkState(link, ports, evidence, nodes, now = Date.now()) 
   }
 }
 
-export function layoutTopology(nodes, links) {
-  const degree = new Map(nodes.map((n) => [String(n.id), 0]))
-  for (const l of links) {
-    for (const id of [l.source_node_id, l.target_node_id])
-      degree.set(String(id), (degree.get(String(id)) || 0) + 1)
-  }
-  const rank = { core: 0, aggregation: 1, access: 2, external: 3 }
-  const sorted = [...nodes].sort(
-    (a, b) =>
-      (rank[a.layer] ?? 2) - (rank[b.layer] ?? 2) ||
-      (degree.get(String(b.id)) || 0) - (degree.get(String(a.id)) || 0) ||
-      idOrder(a.id, b.id),
-  )
-  const occupied = nodes
-    .filter((n) => n.position_locked)
-    .map((n) => ({
-      x: Number(n.x),
-      y: Number(n.y),
-      width: Number(n.width),
-      height: Number(n.height),
-    }))
-  return sorted.map((n) => {
-    if (n.position_locked) return { ...n }
-    const layer = rank[n.layer] ?? 2
-    let column = 0,
-      x,
-      y
-    do {
-      x = 60 + column++ * 250
-      y = 60 + layer * 180
-    } while (
-      occupied.some(
-        (p) =>
-          x < p.x + p.width + 30 &&
-          x + Number(n.width) + 30 > p.x &&
-          y < p.y + p.height + 30 &&
-          y + Number(n.height) + 30 > p.y,
-      )
-    )
-    occupied.push({ x, y, width: Number(n.width), height: Number(n.height) })
-    return { ...n, x, y }
-  })
-}
+export { hierarchicalLayout as layoutTopology } from './topology-layout.js'

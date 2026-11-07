@@ -57,7 +57,7 @@ export function discoveryDiagnostics(inventory, links, now = Date.now()) {
       unmapped_ports: active.filter(
         (n) => n.match_state === 'matched' && (!n.local_interface_id || !n.remote_interface_id),
       ).length,
-      links: links.filter((l) => l.auto_discovered && l.status !== 'stale').length,
+      links: links.filter((l) => l.lifecycle!=='history' && l.auto_discovered && l.status !== 'stale').length,
     },
   }
 }
