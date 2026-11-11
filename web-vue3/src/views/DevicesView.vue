@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { deviceIcon } from '../services/topology-art'
 import { createDevice, deleteDevice, listDeviceGroups, listDevices, updateDevice, type Device, type DeviceGroup } from '../services/api'
 
 const loading = ref(false)
@@ -267,7 +268,10 @@ onUnmounted(() => window.clearInterval(statusTimer))
         <el-table-column prop="id" label="ID" width="90" />
         <el-table-column label="名称" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">
-            <RouterLink class="device-name-link" :to="`/devices/${row.id}`">{{ row.name }}</RouterLink>
+            <div class="device-name-cell">
+              <span class="device-type-icon" aria-hidden="true"><img :src="deviceIcon('device')" alt="" /></span>
+              <RouterLink class="device-name-link" :to="`/devices/${row.id}`">{{ row.name }}</RouterLink>
+            </div>
           </template>
         </el-table-column>
         <el-table-column prop="host" label="地址" min-width="160" />
@@ -334,5 +338,29 @@ onUnmounted(() => window.clearInterval(statusTimer))
   color: #2563eb;
   font-weight: 700;
   text-decoration: none;
+}
+
+.device-name-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.device-type-icon {
+  display: inline-flex;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: #f0f6fa;
+}
+
+.device-type-icon img {
+  width: 29px;
+  height: 22px;
+  object-fit: contain;
 }
 </style>

@@ -233,7 +233,7 @@ onBeforeUnmount(() => {
               <span v-if="selectedJob">{{ selectedJob.cidr }}</span>
             </div>
           </template>
-          <el-empty v-if="!selectedJob" description="暂无发现任务" />
+          <el-empty v-if="!selectedJob" image="/icons/network/activity-heartbeat.svg" :image-size="76" description="暂无发现任务" />
           <template v-else>
             <el-progress :percentage="progressPercent" :status="selectedJob.status === 'failed' ? 'exception' : selectedJob.status === 'completed' ? 'success' : undefined" />
             <div class="discovery-stats">

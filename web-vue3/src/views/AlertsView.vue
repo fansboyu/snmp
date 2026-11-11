@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Bell, WarningFilled, Warning, CircleCheckFilled } from '@element-plus/icons-vue'
 import MetricCard from '../components/MetricCard.vue'
 import EmailConfigDialog from '../components/EmailConfigDialog.vue'
 import { useRouter } from 'vue-router'
@@ -163,16 +164,16 @@ onMounted(loadData)
 
     <el-row :gutter="16">
       <el-col :span="6">
-        <MetricCard title="当前告警" :value="summary?.active_count || 0" description="未恢复事件" type="danger" />
+        <MetricCard title="当前告警" :value="summary?.active_count || 0" description="未恢复事件" :icon="Bell" type="danger" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="严重告警" :value="summary?.critical_count || 0" description="critical 级别" type="danger" />
+        <MetricCard title="严重告警" :value="summary?.critical_count || 0" description="critical 级别" :icon="WarningFilled" type="danger" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="警告告警" :value="summary?.warning_count || 0" description="warning 级别" type="warning" />
+        <MetricCard title="警告告警" :value="summary?.warning_count || 0" description="warning 级别" :icon="Warning" type="warning" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="已恢复" :value="summary?.resolved_count || 0" description="历史恢复事件" type="success" />
+        <MetricCard title="已恢复" :value="summary?.resolved_count || 0" description="历史恢复事件" :icon="CircleCheckFilled" type="success" />
       </el-col>
     </el-row>
 

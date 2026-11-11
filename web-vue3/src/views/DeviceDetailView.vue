@@ -6,7 +6,7 @@ import { ElMessage } from 'element-plus'
 import EChartCard from '../components/EChartCard.vue'
 import MetricCard from '../components/MetricCard.vue'
 import FollowedPortCard from '../components/FollowedPortCard.vue'
-import { StarFilled, Plus } from '@element-plus/icons-vue'
+import { StarFilled, Plus, Monitor, Connection, CircleCheckFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { usePortFavorites } from '../services/port-favorites'
 import { formatRate, localTime, dataStatusNames } from '../services/traffic-format'
 import {
@@ -265,16 +265,16 @@ onBeforeUnmount(() => {
 
     <el-row :gutter="16">
       <el-col :xs="12" :sm="6">
-        <MetricCard title="设备状态" :value="device?.enabled ? '启用' : '停用'" description="当前采集开关" type="success" />
+        <MetricCard title="设备状态" :value="device?.enabled ? '启用' : '停用'" description="当前采集开关" :icon="Monitor" type="success" />
       </el-col>
       <el-col :xs="12" :sm="6">
-        <MetricCard title="接口数量" :value="interfaceCount" description="已发现接口" />
+        <MetricCard title="接口数量" :value="interfaceCount" description="已发现接口" :icon="Connection" />
       </el-col>
       <el-col :xs="12" :sm="6">
-        <MetricCard title="UP 接口" :value="upCount" description="operStatus = up" type="success" />
+        <MetricCard title="UP 接口" :value="upCount" description="operStatus = up" :icon="CircleCheckFilled" type="success" />
       </el-col>
       <el-col :xs="12" :sm="6">
-        <MetricCard title="DOWN 接口" :value="downCount" description="operStatus = down" type="danger" />
+        <MetricCard title="DOWN 接口" :value="downCount" description="operStatus = down" :icon="CircleCloseFilled" type="danger" />
       </el-col>
     </el-row>
 

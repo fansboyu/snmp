@@ -1263,7 +1263,7 @@ watch(maximized, async () => {
           />
         </svg>
         <div v-if="!nodes.length" class="canvas-empty">
-          <el-empty description="尚无拓扑，进入编辑模式添加设备或同步发现结果" />
+          <el-empty image="/icons/network/topology-full.svg" :image-size="116" description="尚无拓扑，进入编辑模式添加设备或同步发现结果" />
         </div>
       </div>
       <aside v-show="editing || showDetails" class="topology-sidebar">
@@ -1353,8 +1353,9 @@ watch(maximized, async () => {
                 :label="label" /></el-select
             ><el-checkbox v-model="nodeForm.position_locked">锁定节点位置</el-checkbox
             ><el-select v-model="nodeForm.asset_kind" placeholder="设备图标类型"
-              ><el-option v-for="(label, key) in assetNames" :key="key" :label="label" :value="key"
-            /></el-select>
+              ><el-option v-for="(label, key) in assetNames" :key="key" :label="label" :value="key">
+                <span class="asset-kind-option"><img :src="deviceIcon(String(key))" alt="" />{{ label }}</span>
+              </el-option></el-select>
             <el-input
               v-model="nodeForm.asset_vendor"
               maxlength="100"
@@ -1770,6 +1771,16 @@ watch(maximized, async () => {
   position: absolute;
   inset: 25% 10% auto;
   pointer-events: none;
+}
+.asset-kind-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+.asset-kind-option img {
+  width: 34px;
+  height: 24px;
+  object-fit: contain;
 }
 .legend {
   display: flex;

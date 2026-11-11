@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import type { EChartsOption } from 'echarts'
 import { ElMessage } from 'element-plus'
+import { Monitor, Connection, DataLine, CollectionTag } from '@element-plus/icons-vue'
 import EChartCard from '../components/EChartCard.vue'
 import MetricCard from '../components/MetricCard.vue'
 import {
@@ -173,16 +174,16 @@ onMounted(loadData)
 
     <el-row :gutter="16">
       <el-col :span="6">
-        <MetricCard title="在线设备" :value="enabledDevices" :description="`启用 ${enabledDevices} 台`" type="success" />
+        <MetricCard title="在线设备" :value="enabledDevices" :description="`启用 ${enabledDevices} 台`" :icon="Monitor" type="success" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="设备总数" :value="devices.length" :description="`已纳管 ${devices.length} 台`" />
+        <MetricCard title="设备总数" :value="devices.length" :description="`已纳管 ${devices.length} 台`" :icon="Connection" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="指标定义" :value="definitions.length" :description="`接口指标 ${interfaceMetricCount} 个`" type="warning" />
+        <MetricCard title="指标定义" :value="definitions.length" :description="`接口指标 ${interfaceMetricCount} 个`" :icon="DataLine" type="warning" />
       </el-col>
       <el-col :span="6">
-        <MetricCard title="样本数量" :value="samples.length" description="最近采集样本预览" type="danger" />
+        <MetricCard title="样本数量" :value="samples.length" description="最近采集样本预览" :icon="CollectionTag" type="danger" />
       </el-col>
     </el-row>
 
