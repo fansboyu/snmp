@@ -197,6 +197,38 @@ services:
         max-size: 10m
         max-file: '3'
     platform: linux/amd64
+  syslog-collector:
+    environment:
+      DATABASE_URL: postgres://snmp:${POSTGRES_PASSWORD:?Run install.ps1 first}@postgres:5432/snmp_monitor?sslmode=disable
+      SYSLOG_BIND_ADDRESS: 0.0.0.0
+      SYSLOG_UDP_PORT: 1514
+      SYSLOG_ADVERTISED_PORT: ${SYSLOG_UDP_HOST_PORT:-514}
+      SYSLOG_MAX_MESSAGE_BYTES: ${SYSLOG_MAX_MESSAGE_BYTES:-8192}
+      SYSLOG_QUEUE_SIZE: ${SYSLOG_QUEUE_SIZE:-5000}
+      SYSLOG_BATCH_SIZE: ${SYSLOG_BATCH_SIZE:-200}
+      SYSLOG_FLUSH_INTERVAL_MS: ${SYSLOG_FLUSH_INTERVAL_MS:-500}
+      SYSLOG_RETENTION_DAYS: ${SYSLOG_RETENTION_DAYS:-30}
+      SYSLOG_RETENTION_INTERVAL_SECONDS: ${SYSLOG_RETENTION_INTERVAL_SECONDS:-3600}
+    ports:
+    - ${SYSLOG_HOST_BIND:-0.0.0.0}:${SYSLOG_UDP_HOST_PORT:-514}:1514/udp
+    mem_limit: 128m
+    cpus: '0.50'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+    - snmp-monitor-net
+    image: netlooker/syslog-collector:${IMAGE_VERSION:?Run install.ps1 first}
+    pull_policy: never
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    platform: linux/amd64
   web-vue3:
     ports:
     - ${HOST_BIND:-0.0.0.0}:${WEB_PORT:-15173}:80

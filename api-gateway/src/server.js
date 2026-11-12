@@ -13,6 +13,7 @@ import { discoveryRoutes } from './routes/discovery.js'
 import { interfaceRoutes } from './routes/interfaces.js'
 import { metricRoutes } from './routes/metrics.js'
 import { systemRoutes } from './routes/system.js'
+import { syslogRoutes } from './routes/syslog.js'
 import { topologyRoutes } from './routes/topology.js'
 
 const app = Fastify({
@@ -71,6 +72,7 @@ await app.register(discoveryRoutes, { prefix: '/api/discovery' })
 await app.register(interfaceRoutes, { prefix: '/api/interfaces' })
 await app.register(metricRoutes, { prefix: '/api/metrics' })
 await app.register(systemRoutes, { prefix: '/api/system' })
+await app.register(syslogRoutes, { prefix: '/api/syslog' })
 await app.register(topologyRoutes, { prefix: '/api/topology' })
 
 const port = Number(app.config.PORT)

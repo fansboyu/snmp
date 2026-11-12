@@ -171,6 +171,34 @@ services:
     networks:
       - snmp-monitor-net
 
+  syslog-collector:
+    build:
+      context: ./collector-go
+      dockerfile: Dockerfile.syslog-collector
+    environment:
+      DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      SYSLOG_BIND_ADDRESS: 0.0.0.0
+      SYSLOG_UDP_PORT: 1514
+      SYSLOG_ADVERTISED_PORT: ${SYSLOG_UDP_HOST_PORT:-514}
+      SYSLOG_MAX_MESSAGE_BYTES: ${SYSLOG_MAX_MESSAGE_BYTES:-8192}
+      SYSLOG_QUEUE_SIZE: ${SYSLOG_QUEUE_SIZE:-5000}
+      SYSLOG_BATCH_SIZE: ${SYSLOG_BATCH_SIZE:-200}
+      SYSLOG_FLUSH_INTERVAL_MS: ${SYSLOG_FLUSH_INTERVAL_MS:-500}
+      SYSLOG_RETENTION_DAYS: ${SYSLOG_RETENTION_DAYS:-30}
+      SYSLOG_RETENTION_INTERVAL_SECONDS: ${SYSLOG_RETENTION_INTERVAL_SECONDS:-3600}
+    ports:
+      - "${SYSLOG_HOST_BIND:-0.0.0.0}:${SYSLOG_UDP_HOST_PORT:-514}:1514/udp"
+    mem_limit: 128m
+    cpus: "0.50"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+    networks:
+      - snmp-monitor-net
+
   web-vue3:
     build:
       context: ./web-vue3

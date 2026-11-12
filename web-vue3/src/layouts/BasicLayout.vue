@@ -5,6 +5,7 @@ import {
   Bell,
   Collection,
   DataLine,
+  Document,
   Expand,
   Fold,
   House,
@@ -110,6 +111,10 @@ async function changePassword(): Promise<void> {
         <el-menu-item index="/alerts">
           <el-icon><Bell /></el-icon>
           <span>告警中心</span>
+        </el-menu-item>
+        <el-menu-item index="/syslog">
+          <el-icon><Document /></el-icon>
+          <span>系统日志</span>
         </el-menu-item>
         <el-menu-item index="/latest">
           <el-icon><DataLine /></el-icon>

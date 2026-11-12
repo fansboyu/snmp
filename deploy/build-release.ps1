@@ -30,7 +30,7 @@ foreach ($template in @('.env.example', '部署说明.md')) {
     [IO.File]::WriteAllText($templatePath, [IO.File]::ReadAllText($templatePath).Replace('RELEASE_VERSION', $ReleaseVersion), $utf8)
 }
 $images = @()
-foreach ($service in @('postgres', 'api-gateway', 'migrator', 'collector-go', 'discovery-worker', 'notifier', 'web-vue3')) {
+foreach ($service in @('postgres', 'api-gateway', 'migrator', 'collector-go', 'discovery-worker', 'notifier', 'syslog-collector', 'web-vue3')) {
     $source = if ($service -eq 'postgres') { 'postgres:18-alpine' } else { "${SourceProject}-${service}:latest" }
     $reference = "netlooker/${service}:$ReleaseVersion"
     $details = @(Run-Docker -Arguments @('image', 'inspect', $source) | ConvertFrom-Json)[0]

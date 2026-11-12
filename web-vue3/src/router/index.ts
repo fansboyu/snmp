@@ -11,6 +11,7 @@ import LatestDataView from '../views/LatestDataView.vue'
 import LoginView from '../views/LoginView.vue'
 import MetricsView from '../views/MetricsView.vue'
 import TopologyView from '../views/TopologyView.vue'
+import SyslogView from '../views/SyslogView.vue'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, title: '登录' } },
@@ -27,6 +28,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'devices/:deviceId/interfaces/:interfaceId', name: 'interface-detail', component: InterfaceDetailView, meta: { title: '端口流量' } },
       { path: 'metrics', name: 'metrics', component: MetricsView, meta: { title: '指标管理' } },
       { path: 'alerts', name: 'alerts', component: AlertsView, meta: { title: '告警中心' } },
+      { path: 'syslog', name: 'syslog', component: SyslogView, meta: { title: '系统日志' } },
       { path: 'latest', name: 'latest', component: LatestDataView, meta: { title: '最新数据' } }
     ]
   },

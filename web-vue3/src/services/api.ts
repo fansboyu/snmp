@@ -828,6 +828,66 @@ export interface TopologyDetail {
 }
 export interface TopologyChange {id:string;entity_type:string;entity_id:string;action:string;created_at:string;before_data:Record<string,unknown>|null;after_data:Record<string,unknown>|null}
 export interface TopologyFlow {id:string;source:PortTrafficSummary|null;target:PortTrafficSummary|null}
+export interface SyslogStatus {
+  online: boolean
+  started_at: string | null
+  updated_at: string | null
+  last_received_at: string | null
+  received_count: string
+  stored_count: string
+  dropped_count: string
+  last_error: string | null
+  host_port: number | null
+  last_hour_count: number
+  critical_count: number
+  error_count: number
+  warning_count: number
+}
+export interface SyslogEvent {
+  id: string
+  received_at: string
+  reported_at: string | null
+  source_ip: string
+  hostname: string | null
+  device_id: string | null
+  device_name: string | null
+  facility: number | null
+  severity: number | null
+  app_name: string | null
+  procid: string | null
+  msgid: string | null
+  structured_data: string | null
+  syslog_version: number | null
+  parsed: boolean
+  message: string
+  raw_message: string
+}
+export interface SyslogEventPage {
+  items: SyslogEvent[]
+  total: number
+  page: number
+  pageSize: number
+  start: string
+  end: string
+}
+export interface SyslogEventQuery {
+  q?: string
+  deviceId?: string
+  severity?: string
+  range?: string
+  start?: string
+  end?: string
+  page?: number
+  pageSize?: number
+}
+export const getSyslogStatus = (): Promise<SyslogStatus> => request('/api/syslog/status')
+export const getSyslogEvents = (params: SyslogEventQuery): Promise<SyslogEventPage> => {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== '') query.set(key, String(value))
+  })
+  return request(`/api/syslog/events?${query.toString()}`)
+}
 export const getTopologyHistory = (before?:string):Promise<TopologyChange[]> => request(`/api/topology/default/history${before?`?before=${before}`:''}`)
 export const getTopologyLayoutPreview = ():Promise<TopologyNode[]> => request('/api/topology/default/layout-preview')
 export const setTopologyRoot = (id:string|null):Promise<TopologyMap> => request('/api/topology/default/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({root_node_id:id})})
