@@ -2,12 +2,15 @@ package collector
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosnmp/gosnmp"
 	"snmp-monitor/collector-go/internal/mailconfig"
@@ -612,14 +615,15 @@ type cdpNeighborKey struct {
 }
 
 type lldpNeighborRow struct {
-	LocalPortNum      string
-	RemoteChassis     string
-	RemotePortID      string
-	RemotePortDesc    string
-	RemoteSysName     string
-	RemoteSysDesc     string
-	RemoteMgmtAddress string
-	Raw               map[string]string
+	LocalPortNum        string
+	RemoteChassis       string
+	RemotePortIDSubtype int
+	RemotePortID        string
+	RemotePortDesc      string
+	RemoteSysName       string
+	RemoteSysDesc       string
+	RemoteMgmtAddress   string
+	Raw                 map[string]string
 }
 
 type cdpNeighborRow struct {
@@ -634,14 +638,14 @@ type cdpNeighborRow struct {
 
 func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time, scans ...*neighborScan) []NeighborInfo {
 	scan := scanArgument(scans)
-	localPortIDs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.3", scan)
-	localPortDescs := walkTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.4", scan)
+	localPortIDs := walkLLDPLocalPortIDs(client, scan)
+	localPortDescs := walkSafeTextColumn(client, ".1.0.8802.1.1.2.1.3.7.1.4", scan)
 	if len(localPortIDs) == 0 && len(localPortDescs) == 0 {
 		return nil
 	}
 
 	rows := map[lldpNeighborKey]*lldpNeighborRow{}
-	walkLLDPColumn := func(columnOID string, apply func(*lldpNeighborRow, string)) {
+	walkLLDPColumn := func(columnOID string, apply func(*lldpNeighborRow, interface{}, string)) {
 		scan.walk(client, columnOID, func(variable gosnmp.SnmpPDU) error {
 			parts := oidSuffixParts(columnOID, variable.Name)
 			if len(parts) != 3 {
@@ -653,18 +657,25 @@ func collectLLDPNeighbors(device Device, client *gosnmp.GoSNMP, now time.Time, s
 				row = &lldpNeighborRow{LocalPortNum: parts[1], Raw: map[string]string{}}
 				rows[key] = row
 			}
-			value := snmpValueText(variable.Value)
+			value := safeSNMPText(variable.Value)
 			row.Raw[columnOID] = value
-			apply(row, value)
+			apply(row, variable.Value, value)
 			return nil
 		})
 	}
 
-	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.5", func(row *lldpNeighborRow, value string) { row.RemoteChassis = value })
-	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.7", func(row *lldpNeighborRow, value string) { row.RemotePortID = value })
-	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.8", func(row *lldpNeighborRow, value string) { row.RemotePortDesc = value })
-	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.9", func(row *lldpNeighborRow, value string) { row.RemoteSysName = value })
-	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.10", func(row *lldpNeighborRow, value string) { row.RemoteSysDesc = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.5", func(row *lldpNeighborRow, raw interface{}, _ string) {
+		row.RemoteChassis = topologyChassisText(raw)
+	})
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.6", func(row *lldpNeighborRow, _ interface{}, value string) {
+		row.RemotePortIDSubtype, _ = strconv.Atoi(value)
+	})
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.7", func(row *lldpNeighborRow, raw interface{}, _ string) {
+		row.RemotePortID = lldpIdentifierText(raw, row.RemotePortIDSubtype)
+	})
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.8", func(row *lldpNeighborRow, _ interface{}, value string) { row.RemotePortDesc = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.9", func(row *lldpNeighborRow, _ interface{}, value string) { row.RemoteSysName = value })
+	walkLLDPColumn(".1.0.8802.1.1.2.1.4.1.1.10", func(row *lldpNeighborRow, _ interface{}, value string) { row.RemoteSysDesc = value })
 
 	scan.walk(client, ".1.0.8802.1.1.2.1.4.2.1.3", func(variable gosnmp.SnmpPDU) error {
 		parts := oidSuffixParts(".1.0.8802.1.1.2.1.4.2.1.3", variable.Name)
@@ -766,6 +777,76 @@ func walkTextColumn(client *gosnmp.GoSNMP, columnOID string, scans ...*neighborS
 		return nil
 	})
 	return values
+}
+
+func walkSafeTextColumn(client *gosnmp.GoSNMP, columnOID string, scans ...*neighborScan) map[string]string {
+	scan := scanArgument(scans)
+	values := map[string]string{}
+	scan.walk(client, columnOID, func(variable gosnmp.SnmpPDU) error {
+		parts := oidSuffixParts(columnOID, variable.Name)
+		if len(parts) != 1 {
+			return nil
+		}
+		values[parts[0]] = safeSNMPText(variable.Value)
+		return nil
+	})
+	return values
+}
+
+func walkLLDPLocalPortIDs(client *gosnmp.GoSNMP, scan *neighborScan) map[string]string {
+	const subtypeOID = ".1.0.8802.1.1.2.1.3.7.1.2"
+	const portIDOID = ".1.0.8802.1.1.2.1.3.7.1.3"
+	subtypes := map[string]int{}
+	scan.walk(client, subtypeOID, func(variable gosnmp.SnmpPDU) error {
+		parts := oidSuffixParts(subtypeOID, variable.Name)
+		if len(parts) != 1 {
+			return nil
+		}
+		subtypes[parts[0]], _ = strconv.Atoi(snmpValueText(variable.Value))
+		return nil
+	})
+	values := map[string]string{}
+	scan.walk(client, portIDOID, func(variable gosnmp.SnmpPDU) error {
+		parts := oidSuffixParts(portIDOID, variable.Name)
+		if len(parts) != 1 {
+			return nil
+		}
+		values[parts[0]] = lldpIdentifierText(variable.Value, subtypes[parts[0]])
+		return nil
+	})
+	return values
+}
+
+// safeSNMPText makes arbitrary SNMP OCTET STRING values safe for PostgreSQL
+// text columns and JSON. Keep printable UTF-8 intact; represent binary values
+// as an explicit hex string so no information is lost.
+func safeSNMPText(value interface{}) string {
+	text := snmpValueText(value)
+	if !utf8.ValidString(text) || strings.ContainsRune(text, '\x00') {
+		return "hex:" + hex.EncodeToString([]byte(text))
+	}
+	return text
+}
+
+func lldpIdentifierText(value interface{}, subtype int) string {
+	data, ok := value.([]byte)
+	if !ok {
+		return safeSNMPText(value)
+	}
+	switch subtype {
+	case 3: // lldpPortIdSubtype: macAddress
+		if len(data) == 6 || len(data) == 8 {
+			return net.HardwareAddr(data).String()
+		}
+	case 4: // lldpPortIdSubtype: networkAddress
+		if len(data) == 5 && data[0] == 1 {
+			return net.IP(data[1:]).String()
+		}
+		if len(data) == 17 && data[0] == 2 {
+			return net.IP(data[1:]).String()
+		}
+	}
+	return safeSNMPText(data)
 }
 
 func walkColumn(client *gosnmp.GoSNMP, columnOID string, walkFn func(gosnmp.SnmpPDU) error) error {

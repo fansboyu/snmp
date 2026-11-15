@@ -36,3 +36,21 @@ func TestLLDPManagementAddressIndices(t *testing.T) {
 		t.Fatal("unexpected errors")
 	}
 }
+
+func TestLLDPIdentifierTextPreservesSubtypeAndBinarySafety(t *testing.T) {
+	if got := lldpIdentifierText([]byte{0xaa, 0xc1, 0xab, 0x1a, 0x83, 0x38}, 3); got != "aa:c1:ab:1a:83:38" {
+		t.Fatalf("MAC subtype rendered incorrectly: %q", got)
+	}
+	if got := lldpIdentifierText([]byte("eth1"), 5); got != "eth1" {
+		t.Fatalf("interface-name subtype rendered incorrectly: %q", got)
+	}
+	if got := lldpIdentifierText([]byte{1, 192, 0, 2, 10}, 4); got != "192.0.2.10" {
+		t.Fatalf("IPv4 network-address subtype rendered incorrectly: %q", got)
+	}
+	if got := safeSNMPText([]byte{0xaa, 0xc1, 0xab}); got != "hex:aac1ab" {
+		t.Fatalf("binary value was not represented safely: %q", got)
+	}
+	if got := safeSNMPText([]byte("端口一")); got != "端口一" {
+		t.Fatalf("valid UTF-8 text was altered: %q", got)
+	}
+}

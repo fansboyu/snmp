@@ -1,6 +1,6 @@
 # SNMP Monitoring Platform
 
-当前发布版本：**v1.6.6**。本版新增独立 Syslog 收集与日志检索，并为系统日志页面补充语义图标。完整变更与升级说明见 [v1.6.6 发布说明](docs/releases/v1.6.6.md)。
+当前发布版本：**v1.6.7**。本版修复 LLDP 二进制端口标识导致拓扑邻居快照写入失败的问题。完整变更与升级说明见 [v1.6.7 发布说明](docs/releases/v1.6.7.md)。
 
 Syslog 由独立 UDP 收集容器接收设备日志，保存到 PostgreSQL，并通过系统日志页面搜索和查看详情。协议范围、部署配置、数据保留与丢包边界见 [Syslog 说明](docs/syslog.md)。
 
@@ -103,7 +103,7 @@ docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp
 docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.6
+git checkout v1.6.7
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -1181,7 +1181,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.6` 导出八个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.7` 导出八个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 
