@@ -199,11 +199,14 @@ export function deriveLinkState(link, ports, evidence, nodes, now = Date.now()) 
     return { status: 'disabled', reason: '端口管理关闭' }
   if (endpoints.some((p) => fresh(p) && ['2', 'down'].includes(String(p.oper_status))))
     return { status: 'down', reason: '最新端口运行状态为 DOWN' }
-  if (nodes.some((n) => n.device_status === 'offline'))
-    return { status: 'down', reason: '端点设备已确认不可达；不代表物理线缆断开' }
   const current = evidence.filter((n) => !n.stale && now - Date.parse(n.last_seen_at) <= 1200000)
   if (link.auto_discovered && !current.length)
     return { status: 'stale', reason: '邻居证据过期，连接关系待确认' }
+  if (nodes.some((n) => n.device_status === 'offline'))
+    return {
+      status: link.auto_discovered ? 'unconfirmed' : 'unknown',
+      reason: '端点设备当前不可达，缺少新鲜端口状态；不能据此判定链路断开',
+    }
   if (
     endpoints.length === 2 &&
     endpoints.every((p) => fresh(p) && ['1', 'up'].includes(String(p.oper_status)))

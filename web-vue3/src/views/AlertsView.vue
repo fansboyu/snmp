@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Bell, WarningFilled, Warning, CircleCheckFilled } from '@element-plus/icons-vue'
+import { Bell, WarningFilled, Warning, CircleCheckFilled, Message, ChatDotRound } from '@element-plus/icons-vue'
 import MetricCard from '../components/MetricCard.vue'
 import EmailConfigDialog from '../components/EmailConfigDialog.vue'
+import WeComConfigDialog from '../components/WeComConfigDialog.vue'
 import { useRouter } from 'vue-router'
 const router = useRouter()
 import {
@@ -15,6 +16,7 @@ import {
   retryAlertNotification,
   resolveAlertEvent,
   sendTestEmail,
+  sendTestWeComNotification,
   updateAlertRule,
   type AlertEvent,
   type AlertNotification,
@@ -32,7 +34,9 @@ const notificationStatus = ref<'all' | 'pending' | 'sending' | 'sent' | 'failed'
 const resolvingId = ref('')
 const retryingNotificationId = ref('')
 const testingEmail = ref(false)
+const testingWeCom = ref(false)
 const emailConfigVisible = ref(false)
+const weComConfigVisible = ref(false)
 const ruleForm = reactive({
   name: '',
   rule_type: 'cpu_threshold',
@@ -118,6 +122,22 @@ async function testEmailNotification(): Promise<void> {
   }
 }
 
+async function testWeComNotification(): Promise<void> {
+  testingWeCom.value = true
+  try {
+    const result = await sendTestWeComNotification()
+    ElMessage.success(`企业微信测试消息已入队：${result.notifications.length} 条`)
+    notificationStatus.value = 'all'
+    await loadData()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '发送企业微信测试消息失败，请检查应用配置')
+  } finally { testingWeCom.value = false }
+}
+
+function notificationChannelName(channel: string): string {
+  return ({ email: '邮件', wecom_app: '企业微信应用' } as Record<string, string>)[channel] || channel
+}
+
 function severityType(severity: AlertEvent['severity']): 'danger' | 'warning' | 'info' {
   if (severity === 'critical') return 'danger'
   if (severity === 'warning') return 'warning'
@@ -152,7 +172,8 @@ onMounted(loadData)
     <div class="page-toolbar">
       <h2 class="page-title">告警中心</h2>
       <div class="toolbar-actions">
-        <el-button @click="emailConfigVisible = true">邮件配置</el-button>
+        <el-button :icon="Message" @click="emailConfigVisible = true">邮件配置</el-button>
+        <el-button :icon="ChatDotRound" @click="weComConfigVisible = true">企业微信应用配置</el-button>
         <el-select v-model="eventStatus" placeholder="事件状态" @change="loadData">
           <el-option label="当前告警" value="active" />
           <el-option label="历史恢复" value="resolved" />
@@ -218,7 +239,7 @@ onMounted(loadData)
     <el-card class="page-card dashboard-row" shadow="never">
       <template #header>
         <div class="card-header-row">
-          <span>邮件通知记录</span>
+          <span>通知发送记录</span>
           <div class="toolbar-actions">
             <el-select v-model="notificationStatus" placeholder="通知状态" @change="loadData">
               <el-option label="全部" value="all" />
@@ -228,7 +249,9 @@ onMounted(loadData)
               <el-option label="失败" value="failed" />
             </el-select>
             <el-button :loading="testingEmail" @click="testEmailNotification">发送测试邮件</el-button>
-            <el-button @click="emailConfigVisible = true">邮件配置</el-button>
+            <el-button :icon="Message" @click="emailConfigVisible = true">邮件配置</el-button>
+            <el-button :loading="testingWeCom" @click="testWeComNotification">发送企业微信测试消息</el-button>
+            <el-button :icon="ChatDotRound" @click="weComConfigVisible = true">企业微信应用配置</el-button>
           </div>
         </div>
       </template>
@@ -238,8 +261,8 @@ onMounted(loadData)
             <el-tag :type="notificationStatusType(row.status)">{{ row.status }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="channel" label="通道" width="90" />
-        <el-table-column prop="target" label="收件人" min-width="180" show-overflow-tooltip />
+        <el-table-column label="通道" width="125"><template #default="{ row }">{{ notificationChannelName(row.channel) }}</template></el-table-column>
+        <el-table-column prop="target" label="收件人 / UserID" min-width="180" show-overflow-tooltip />
         <el-table-column prop="subject" label="标题" min-width="260" show-overflow-tooltip />
         <el-table-column prop="device_name" label="设备" min-width="140" />
         <el-table-column prop="retry_count" label="重试" width="80" />
@@ -340,5 +363,6 @@ onMounted(loadData)
       </el-col>
     </el-row>
     <EmailConfigDialog v-model="emailConfigVisible" @tested="loadData" />
+    <WeComConfigDialog v-model="weComConfigVisible" @tested="loadData" />
   </div>
 </template>

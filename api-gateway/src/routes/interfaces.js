@@ -12,6 +12,71 @@ export async function interfaceRoutes(app) {
     }
     return iface
   }
+  app.get('/:id/endpoints', async (request, reply) => {
+    const iface = await getInterface(request, reply)
+    if (!iface) return
+    const result=await app.db.query(`
+      with port_macs as (
+        select f.device_id,f.vlan_id,f.mac_address,f.if_index,f.observed_at
+        from switch_mac_observations f
+        where f.device_id=$1 and f.if_index=$2 and f.active and f.observed_at>now()-interval '30 minutes'
+      )
+      select f.vlan_id,f.mac_address,f.if_index,f.observed_at as mac_seen_at,
+        i.ip_address::text as ip_address,i.vlan_id as ip_vlan_id,i.device_id as ip_source_device_id,
+        d.name as ip_source_device_name,i.if_index as ip_source_if_index,i.observed_at as ip_seen_at,
+        coalesce(ip_locations.location_count,0)::integer as ip_source_count,
+        case when f.vlan_id>0 and i.vlan_id=f.vlan_id and locations.location_count=1 and ip_locations.location_count=1 then 'high'
+          when i.mac_address is not null and locations.location_count=1 and ip_locations.location_count=1 then 'medium'
+          when i.mac_address is not null then 'ambiguous'
+          else 'mac_only' end as confidence,
+        coalesce(locations.location_count,0)::integer as mac_location_count
+      from port_macs f
+      left join lateral (
+        select n.* from ip_mac_observations n
+        where n.mac_address=f.mac_address and n.active and n.observed_at>now()-interval '30 minutes'
+          and (f.vlan_id=0 or n.vlan_id=0 or n.vlan_id=f.vlan_id)
+        order by n.observed_at desc
+      ) i on true
+      left join devices d on d.id=i.device_id
+      left join lateral (
+        select count(distinct (n.device_id,n.if_index))::integer as location_count
+        from ip_mac_observations n
+        where i.mac_address is not null and n.mac_address=i.mac_address and n.ip_address=i.ip_address
+          and n.vlan_id=i.vlan_id and n.active and n.observed_at>now()-interval '30 minutes'
+      ) ip_locations on true
+      left join lateral (
+        select count(distinct (m.device_id,m.if_index))::integer as location_count
+        from switch_mac_observations m where m.mac_address=f.mac_address and m.active
+          and m.observed_at>now()-interval '30 minutes'
+      ) locations on true
+      order by f.vlan_id,f.mac_address,i.ip_address
+    `, [iface.device_id, iface.if_index])
+    const items = result.rows.map(row => ({
+      ...row,
+      vlan_id: row.vlan_id || null,
+      ip_vlan_id: row.ip_vlan_id || null,
+      ip_address: row.ip_address || null,
+      match_state: row.confidence === 'high' ? 'matched' : row.confidence === 'medium' ? 'candidate' : row.confidence === 'ambiguous' ? 'ambiguous' : 'mac_only'
+    }))
+    const scans = await app.db.query(`select protocol,status,reason,checked_at,last_success_at,neighbor_count
+      from topology_scans where device_id=$1 and protocol in ('qbridge_fdb','bridge_fdb','arp') order by protocol`, [iface.device_id])
+    const evidence = await app.db.query(`select
+      (select count(*)::integer from device_neighbors n where n.device_id=$1 and n.local_if_index=$2 and not n.stale and n.last_seen_at>now()-interval '20 minutes') as neighbor_count,
+      (select count(distinct mac_address)::integer from switch_mac_observations f where f.device_id=$1 and f.if_index=$2 and f.active and f.observed_at>now()-interval '30 minutes') as mac_count`, [iface.device_id, iface.if_index])
+    const portEvidence = evidence.rows[0] || { neighbor_count: 0, mac_count: 0 }
+    return {
+      interface_id: iface.id,
+      device_id: iface.device_id,
+      if_index: iface.if_index,
+      items,
+      scans: scans.rows,
+      port_evidence: {
+        ...portEvidence,
+        likely_uplink: Number(portEvidence.neighbor_count) > 0 || Number(portEvidence.mac_count) >= 20
+      },
+      observed_at: items.reduce((latest, item) => !latest || Date.parse(item.mac_seen_at) > Date.parse(latest) ? item.mac_seen_at : latest, null)
+    }
+  })
   app.get('/:id', async (request,reply) => {
     const iface=await getInterface(request,reply);if(!iface)return
     const counters=await app.db.query(`select distinct on(m.name) m.name,s.value_text as value,s.created_at as sampled_at

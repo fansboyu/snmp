@@ -357,6 +357,11 @@ func ensureRuntimeSchemaOnce(ctx context.Context, pool *pgxpool.Pool) error {
 			config jsonb not null,
 			updated_at timestamptz not null default now()
 		);
+		create table if not exists wecom_app_notification_config (
+			id integer primary key check (id = 1),
+			config jsonb not null,
+			updated_at timestamptz not null default now()
+		);
 		alter table alert_notifications add column if not exists subject text;
 		alter table alert_notifications add column if not exists error text;
 		alter table alert_notifications add column if not exists retry_count integer not null default 0;
@@ -1033,6 +1038,54 @@ func (store *PostgresStore) saveTopologySnapshot(ctx context.Context, deviceID i
 			return err
 		}
 	}
+	for _, scan := range snapshot.Endpoints.Scans {
+		if scan.Status != "success" && scan.Status != "empty" {
+			continue
+		}
+		sourceTable := ""
+		switch scan.Protocol {
+		case "qbridge_fdb", "bridge_fdb":
+			sourceTable = "switch_mac_observations"
+		case "arp":
+			sourceTable = "ip_mac_observations"
+		}
+		if sourceTable == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, "update "+sourceTable+" set active=false where device_id=$1", deviceID); err != nil {
+			return err
+		}
+	}
+	for _, row := range snapshot.Endpoints.MACPorts {
+		vlan := 0
+		if row.VLAN != nil {
+			vlan = *row.VLAN
+		}
+		if row.IfIndex <= 0 || row.MAC == "" {
+			continue
+		}
+		_, err := tx.Exec(ctx, `insert into switch_mac_observations(device_id,vlan_id,mac_address,if_index,active,observed_at)
+			values($1,$2,$3,$4,true,$5) on conflict(device_id,vlan_id,mac_address) do update set
+			if_index=excluded.if_index,active=true,observed_at=excluded.observed_at`, deviceID, vlan, row.MAC, row.IfIndex, row.ObservedAt)
+		if err != nil {
+			return err
+		}
+	}
+	for _, row := range snapshot.Endpoints.IPMACs {
+		vlan := 0
+		if row.VLAN != nil {
+			vlan = *row.VLAN
+		}
+		if row.IfIndex <= 0 || row.IP == "" || row.MAC == "" {
+			continue
+		}
+		_, err := tx.Exec(ctx, `insert into ip_mac_observations(device_id,vlan_id,ip_address,mac_address,if_index,active,observed_at)
+			values($1,$2,$3::inet,$4,$5,true,$6) on conflict(device_id,vlan_id,if_index,ip_address,mac_address) do update set
+			vlan_id=excluded.vlan_id,if_index=excluded.if_index,active=true,observed_at=excluded.observed_at`, deviceID, vlan, row.IP, row.MAC, row.IfIndex, row.ObservedAt)
+		if err != nil {
+			return err
+		}
+	}
 
 	return tx.Commit(ctx)
 }
@@ -1200,7 +1253,7 @@ func (store *PostgresStore) ClaimPendingNotifications(ctx context.Context, limit
 		with picked as (
 			select id
 			from alert_notifications
-			where channel = 'email'
+			where channel in ('email', 'wecom_app')
 				and status = 'pending'
 				and next_retry_at <= now()
 			order by created_at
@@ -1404,6 +1457,34 @@ func (store *PostgresStore) CleanupOldData(ctx context.Context, policy collector
 			return stats, err
 		}
 		stats.DiscoveryJobs = deleted
+	}
+
+	if policy.EndpointObservationsDays > 0 {
+		macRows, err := store.deleteOldRows(ctx, `
+			delete from switch_mac_observations
+			where ctid in (
+				select ctid from switch_mac_observations
+				where observed_at < now() - make_interval(days => $1)
+				order by observed_at
+				limit $2
+			)
+		`, policy.EndpointObservationsDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		ipRows, err := store.deleteOldRows(ctx, `
+			delete from ip_mac_observations
+			where ctid in (
+				select ctid from ip_mac_observations
+				where observed_at < now() - make_interval(days => $1)
+				order by observed_at
+				limit $2
+			)
+		`, policy.EndpointObservationsDays, batchSize)
+		if err != nil {
+			return stats, err
+		}
+		stats.EndpointObservations = macRows + ipRows
 	}
 
 	return stats, nil

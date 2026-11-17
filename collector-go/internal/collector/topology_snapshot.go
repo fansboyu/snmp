@@ -22,6 +22,7 @@ type TopologySnapshot struct {
 	Neighbors  []NeighborInfo
 	Scans      []TopologyScan
 	Identities []TopologyIdentity
+	Endpoints  EndpointSnapshot
 }
 type TopologyStore interface {
 	SaveTopologySnapshot(context.Context, int64, TopologySnapshot) error
@@ -100,6 +101,8 @@ func (engine Engine) collectTopologySnapshot(device Device, client *gosnmp.GoSNM
 		snapshot.Neighbors = append(snapshot.Neighbors, neighbors...)
 		snapshot.Scans = append(snapshot.Scans, scan.outcome(protocol, len(neighbors)))
 	}
+	snapshot.Endpoints = collectEndpointSnapshot(device, client, time.Now().UTC())
+	snapshot.Scans = append(snapshot.Scans, snapshot.Endpoints.Scans...)
 	return snapshot
 }
 

@@ -41,7 +41,7 @@ func main() {
 		StaleSendingAfter: durationEnv("SMTP_STALE_SENDING_SECONDS", 300),
 	}
 
-	log.Println("email notifier started")
+	log.Println("notification dispatcher started")
 	if err := service.Run(ctx); err != nil {
 		log.Fatalf("notifier stopped: %v", err)
 	}

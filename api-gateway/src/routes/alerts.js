@@ -1,4 +1,5 @@
 import { emailTargets, loadMailConfig, publicMailConfig, updatedMailConfig, mailConfigSchema } from '../mail-config.js'
+import { loadWeComConfig, publicWeComConfig, updatedWeComConfig, weComConfigSchema } from '../wecom-config.js'
 
 export async function alertRoutes(app) {
   app.get('/summary', async () => {
@@ -9,7 +10,7 @@ export async function alertRoutes(app) {
         count(*) filter (where status = 'active' and severity = 'critical')::integer as critical_count,
         count(*) filter (where status = 'active' and severity = 'warning')::integer as warning_count
       from alert_events
-      where title <> '邮件通知测试'
+      where title not in ('邮件通知测试', '企业微信应用通知测试')
     `)
     return result.rows[0]
   })
@@ -283,6 +284,53 @@ export async function alertRoutes(app) {
       await client.query('commit')
       reply.code(201)
       return { event: event.rows[0], notifications }
+    } catch (error) {
+      await client.query('rollback')
+      throw error
+    } finally {
+      client.release()
+    }
+  })
+
+  app.get('/wecom-config', async () => publicWeComConfig(await loadWeComConfig(app)))
+
+  app.patch('/wecom-config', { schema: weComConfigSchema }, async (request, reply) => {
+    const current = await loadWeComConfig(app)
+    let config
+    try {
+      config = updatedWeComConfig(current, request.body ?? {}, app.config.JWT_SECRET)
+    } catch (error) {
+      return reply.code(400).send({ message: error.message })
+    }
+    await app.db.query(`
+      insert into wecom_app_notification_config (id, config) values (1, $1::jsonb)
+      on conflict (id) do update set config = excluded.config, updated_at = now()
+    `, [JSON.stringify(config)])
+    return publicWeComConfig({ ...config, source: 'database' })
+  })
+
+  app.post('/notifications/test-wecom', async (request, reply) => {
+    const config = await loadWeComConfig(app)
+    if (!config.enabled || !config.corpId || !config.agentId || !config.encryptedSecret || !config.userIds?.length) {
+      return reply.code(400).send({ message: '请先完整配置并启用企业微信自建应用通知' })
+    }
+    const message = `SNMP Monitor 企业微信应用通知测试\n时间: ${new Date().toISOString()}\n如果你收到此消息，说明应用凭证、成员权限和通知队列已连通。`
+    const client = await app.db.connect()
+    try {
+      await client.query('begin')
+      const event = await client.query(`
+        insert into alert_events (severity,status,title,message,value_text,triggered_at,last_seen_at,resolved_at)
+        values ('info','resolved','企业微信应用通知测试',$1,'test',now(),now(),now())
+        returning id,severity,status,title,message,triggered_at,last_seen_at,resolved_at
+      `, [message])
+      const notification = await client.query(`
+        insert into alert_notifications(event_id,channel,target,status,subject,message,next_retry_at,updated_at)
+        values($1,'wecom_app',$2,'pending','企业微信应用通知测试',$3,now(),now())
+        returning id,event_id,channel,target,status,subject,message,error,retry_count,created_at,sent_at,updated_at
+      `, [event.rows[0].id, config.userIds.join('|'), message])
+      await client.query('commit')
+      reply.code(201)
+      return { event: event.rows[0], notifications: [notification.rows[0]] }
     } catch (error) {
       await client.query('rollback')
       throw error

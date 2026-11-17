@@ -15,6 +15,11 @@ export const dbPlugin = fp(async (app) => {
       config jsonb not null,
       updated_at timestamptz not null default now()
     );
+    create table if not exists wecom_app_notification_config (
+      id integer primary key check (id = 1),
+      config jsonb not null,
+      updated_at timestamptz not null default now()
+    );
     create table if not exists admin_users (
       id bigserial primary key,
       username text not null unique,

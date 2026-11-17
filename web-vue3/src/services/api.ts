@@ -171,8 +171,44 @@ export interface PortTrafficResult {
   end: string
   resolution: string
 }
+export interface InterfaceEndpoint {
+  vlan_id: number | null
+  mac_address: string
+  if_index: number
+  mac_seen_at: string
+  ip_address: string | null
+  ip_vlan_id: number | null
+  ip_source_device_id?: string | null
+  ip_source_device_name?: string | null
+  ip_source_if_index?: number | null
+  ip_seen_at?: string | null
+  confidence: 'high' | 'medium' | 'ambiguous' | 'mac_only'
+  match_state: 'matched' | 'candidate' | 'ambiguous' | 'mac_only'
+  mac_location_count: number
+  ip_source_count: number
+}
+export interface InterfaceEndpointScan {
+  protocol: string
+  status: string
+  reason: string
+  checked_at: string
+  last_success_at?: string | null
+  neighbor_count: number
+}
+export interface InterfaceEndpointResult {
+  interface_id: string
+  device_id: string
+  if_index: number
+  items: InterfaceEndpoint[]
+  scans: InterfaceEndpointScan[]
+  port_evidence: {neighbor_count:number;mac_count:number;likely_uplink:boolean}
+  observed_at: string | null
+}
 export function getPort(id: string, deviceId: string, signal?: AbortSignal): Promise<DeviceInterface> {
   return request(`/api/interfaces/${id}${querySuffix({deviceId})}`,{signal})
+}
+export function getPortEndpoints(id: string, deviceId: string, signal?: AbortSignal): Promise<InterfaceEndpointResult> {
+  return request(`/api/interfaces/${id}/endpoints${querySuffix({deviceId})}`,{signal})
 }
 export function getPortTraffic(id: string, params: Record<string,string>, signal?: AbortSignal): Promise<PortTrafficResult> {
   return request(`/api/interfaces/${id}/traffic${querySuffix(params)}`,{signal})
@@ -269,6 +305,16 @@ export interface EmailNotificationConfig {
   smtpPasswordConfigured: boolean
   emailToConfigured: boolean
   source: 'database' | 'environment'
+}
+
+export interface WeComNotificationConfig {
+  enabled: boolean
+  corpId: string
+  agentId: number
+  userIds: string[]
+  sendResolved: boolean
+  secretConfigured: boolean
+  source: 'database'
 }
 
 export async function getEmailNotificationConfig(): Promise<EmailNotificationConfig> {
@@ -442,9 +488,10 @@ export interface TopologyScanRequest {
   created_at:string;started_at?:string;finished_at?:string
 }
 export interface TopologyDiscovery {
-  summary:{total:number;attempted:number;successful:number;pending:number;evidence:number;unmatched:number;unmapped_ports:number;links:number}
+  summary:{total:number;attempted:number;successful:number;pending:number;evidence:number;unmatched:number;unmapped_ports:number;links:number;conflicts:number;needs_confirmation:number;single_sided_links:number;stale_evidence:number}
   devices:Array<{id:string;name:string;host:string;enabled:boolean;status:string;checked_at:string|null;request?:TopologyScanRequest;
-    scans:Array<{protocol:string;status:string;reason:string;checked_at:string;neighbor_count:number}>}>
+    scans:Array<{protocol:string;status:string;reason:string;checked_at:string;neighbor_count:number}>;
+    endpoint_scans:Array<{protocol:string;status:string;reason:string;checked_at:string;neighbor_count:number}>}>
 }
 export const requestTopologyScan = (id:string):Promise<TopologyScanRequest> => request(`/api/topology/devices/${id}/scan`,{method:'POST'})
 
@@ -672,6 +719,20 @@ export async function sendTestEmail(): Promise<TestEmailResponse> {
   return request('/api/alerts/notifications/test-email', {
     method: 'POST'
   })
+}
+
+export async function getWeComNotificationConfig(): Promise<WeComNotificationConfig> {
+  return request('/api/alerts/wecom-config')
+}
+
+export async function saveWeComNotificationConfig(payload: Omit<WeComNotificationConfig, 'source' | 'secretConfigured'> & { appSecret?: string; clearSecret?: boolean }): Promise<WeComNotificationConfig> {
+  return request('/api/alerts/wecom-config', {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  })
+}
+
+export async function sendTestWeComNotification(): Promise<TestEmailResponse> {
+  return request('/api/alerts/notifications/test-wecom', { method: 'POST' })
 }
 
 export async function createDiscoveryJob(payload: CreateDiscoveryJobPayload): Promise<DiscoveryJob> {

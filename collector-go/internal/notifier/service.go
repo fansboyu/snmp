@@ -13,10 +13,12 @@ import (
 
 	"snmp-monitor/collector-go/internal/collector"
 	"snmp-monitor/collector-go/internal/mailconfig"
+	"snmp-monitor/collector-go/internal/wecomconfig"
 )
 
 type Store interface {
 	LoadMailConfig(context.Context) (*mailconfig.Config, error)
+	LoadWeComConfig(context.Context) (*wecomconfig.Config, error)
 	ResetStaleSendingNotifications(context.Context, time.Duration) error
 	ClaimPendingNotifications(context.Context, int) ([]collector.AlertNotification, error)
 	MarkNotificationSent(context.Context, int64) error
@@ -37,13 +39,15 @@ type Service struct {
 	ConfigSecret      string
 	Store             Store
 	SMTP              SMTPConfig
+	WeCom             *WeComClient
+	WeComConfig       *wecomconfig.Config
 	PollInterval      time.Duration
 	BatchSize         int
 	MaxRetries        int
 	StaleSendingAfter time.Duration
 }
 
-func (service Service) Run(ctx context.Context) error {
+func (service *Service) Run(ctx context.Context) error {
 	if err := service.Store.ResetStaleSendingNotifications(ctx, service.staleSendingAfter()); err != nil {
 		log.Printf("reset stale notifications failed: %v", err)
 	}
@@ -64,24 +68,38 @@ func (service Service) Run(ctx context.Context) error {
 	}
 }
 
-func (service Service) processOnce(ctx context.Context) error {
+func (service *Service) processOnce(ctx context.Context) error {
 	config, err := service.Store.LoadMailConfig(ctx)
 	if err != nil {
-		return fmt.Errorf("load email config: %w", err)
-	}
-	if config != nil {
+		log.Printf("load email config failed: %v", err)
+	} else if config != nil {
 		password, err := config.Password(service.ConfigSecret)
 		if err != nil {
-			return err
+			log.Printf("decrypt email password failed: %v", err)
+		} else {
+			service.SMTP = SMTPConfig{Host: config.SMTPHost, Port: config.SMTPPort, Username: config.SMTPUsername, Password: password, From: config.SMTPFrom, TLSMode: config.SMTPTLSMode, Timeout: service.SMTP.Timeout}
 		}
-		service.SMTP = SMTPConfig{Host: config.SMTPHost, Port: config.SMTPPort, Username: config.SMTPUsername, Password: password, From: config.SMTPFrom, TLSMode: config.SMTPTLSMode, Timeout: service.SMTP.Timeout}
+	}
+	service.WeComConfig, err = service.Store.LoadWeComConfig(ctx)
+	if err != nil {
+		log.Printf("load WeCom config failed: %v", err)
+		service.WeComConfig = nil
+	}
+	if service.WeComConfig != nil && service.WeComConfig.EncryptedSecret != "" {
+		secret, err := service.WeComConfig.Secret(service.ConfigSecret)
+		if err != nil {
+			log.Printf("decrypt WeCom application secret failed: %v", err)
+			service.WeComConfig = nil
+		} else {
+			service.WeCom = NewWeComClient(service.WeCom, service.WeComConfig.CorpID, secret, service.SMTP.Timeout)
+		}
 	}
 	notifications, err := service.Store.ClaimPendingNotifications(ctx, service.batchSize())
 	if err != nil {
 		return err
 	}
 	for _, notification := range notifications {
-		if err := service.send(notification); err != nil {
+		if err := service.send(ctx, notification); err != nil {
 			delay := retryDelay(notification.RetryCount + 1)
 			_ = service.Store.MarkNotificationFailed(ctx, notification.ID, err.Error(), delay, service.maxRetries())
 			log.Printf("send notification %d failed: %v", notification.ID, err)
@@ -94,7 +112,19 @@ func (service Service) processOnce(ctx context.Context) error {
 	return nil
 }
 
-func (service Service) send(notification collector.AlertNotification) error {
+func (service Service) send(ctx context.Context, notification collector.AlertNotification) error {
+	if notification.Channel == "wecom_app" {
+		if service.WeComConfig == nil || !service.WeComConfig.Enabled {
+			return fmt.Errorf("WeCom application notification is not configured or enabled")
+		}
+		if service.WeCom == nil {
+			return fmt.Errorf("WeCom application client is unavailable")
+		}
+		return service.WeCom.Send(ctx, service.WeComConfig.AgentID, notification.Target, notification.Message)
+	}
+	if notification.Channel != "email" {
+		return fmt.Errorf("unsupported notification channel %q", notification.Channel)
+	}
 	if strings.TrimSpace(notification.Target) == "" {
 		return fmt.Errorf("empty email target")
 	}

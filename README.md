@@ -1,10 +1,14 @@
 # SNMP Monitoring Platform
 
-当前发布版本：**v1.6.7**。本版修复 LLDP 二进制端口标识导致拓扑邻居快照写入失败的问题。完整变更与升级说明见 [v1.6.7 发布说明](docs/releases/v1.6.7.md)。
+当前发布版本：**v1.6.8**。新增交换机端口 IP/MAC 观测和企业微信自建应用告警通知，并改进拓扑链路状态判定与 Syslog 设备关联。完整变更与升级说明见 [v1.6.8 发布说明](docs/releases/v1.6.8.md)。
 
 Syslog 由独立 UDP 收集容器接收设备日志，保存到 PostgreSQL，并通过系统日志页面搜索和查看详情。协议范围、部署配置、数据保留与丢包边界见 [Syslog 说明](docs/syslog.md)。
 
+端口详情可查看交换机学习到的 MAC、ARP 表关联的 IPv4、VLAN 和证据可信度；采集依据与上联口等限制见 [端口终端识别说明](docs/端口终端识别.md)。
+
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
+
+已有 Linux/WSL 源码部署可使用 [在线升级脚本](deploy/upgrade-source.sh) 下载 GitHub v1.6.8 并升级，保留原项目、数据卷和配置；执行方法及限制见 [升级脚本说明](deploy/upgrade-source-使用说明.md)。
 
 登录页和控制台侧栏底部显示前端版本号，构建时读取 `web-vue3/package.json` 的 `version`。菜单折叠后仍保留版本数字；后续升级修改项目版本并重新构建前端即可同步显示。
 
@@ -28,7 +32,7 @@ Syslog 由独立 UDP 收集容器接收设备日志，保存到 PostgreSQL，并
 - **数据库**：PostgreSQL 18（当前工作区）；已发布的 v1.6.0 离线包仍为 PostgreSQL 16
 - **部署方式**：Docker Compose
 
-当前工作区基础环境：Go 1.27.1 / Alpine 3.24.2，Node 24.21.0 / Alpine 3.24，pgx/v5 5.11.0、gosnmp 1.45.0、x/text 0.42.0。API 使用 Fastify 5.12.5、pg 8.23.1、CORS 11.3.0、JWT 10.2.2；前端构建也使用 Node 24。依赖锁文件固定实际安装版本。pgx v5 使用 pgxpool.New，并保留 Ping 和运行表结构检查，确保连接失败时启动立即报错。旧 pgx/v4、pgproto3/v2 和不再需要的 x/crypto 依赖已移除。已有发布包保持原样，升级后的基础环境需重新构建镜像；修改宿主机工具版本不会更新运行中的容器。
+当前工作区基础环境：Go 1.27.1 / Alpine 3.24.2，Node 24.21.0 / Alpine 3.24，pgx/v5 5.11.0、gosnmp 1.45.0、x/text 0.42.0。API 使用 Fastify 5.12.8、pg 8.23.1、CORS 11.3.0、JWT 10.2.2；前端构建也使用 Node 24。依赖锁文件固定实际安装版本。pgx v5 使用 pgxpool.New，并保留 Ping 和运行表结构检查，确保连接失败时启动立即报错。旧 pgx/v4、pgproto3/v2 和不再需要的 x/crypto 依赖已移除。已有发布包保持原样，升级后的基础环境需重新构建镜像；修改宿主机工具版本不会更新运行中的容器。
 
 升级验证涵盖 Go 测试与竞态检测、PostgreSQL 18 SCRAM/批量写入/Counter64 精度、Linux 本地 SMTP STARTTLS/隐式 TLS/拒绝未受信证书、隔离 SNMP→采集→数据库→API→页面、发现任务及本地通知队列。TLS 回归测试使用临时证书和回环 SMTP，不连接外部邮件服务。Go Docker 构建恢复默认模块校验数据库，不再设置 GOSUMDB=off。
 
@@ -103,7 +107,7 @@ docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp
 docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.7
+git checkout v1.6.8
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -321,7 +325,7 @@ Go SNMP 采集器容器。
 
 ### `snmp-monitor-notifier`
 
-邮件通知发送器容器。
+邮件和企业微信自建应用通知发送器容器。
 
 **构建目录**
 
@@ -330,12 +334,13 @@ Go SNMP 采集器容器。
 
 **主要功能**
 
-- 轮询 `alert_notifications` 中的 `email/pending` 任务。
-- 通过 SMTP 发送邮件。
+- 轮询 `alert_notifications` 中的 `email` 和 `wecom_app` 待发送任务。
+- 邮件通过 SMTP 发送；企业微信通过自建应用消息 API 发送。
+- 企业微信 access token 在内存中缓存；SMTP 密码和企业微信应用 Secret 从数据库读取并解密，不打印到日志。
 - 发送成功标记为 `sent`，失败后按 1 分钟、5 分钟、15 分钟重试，超过次数标记为 `failed`。
 - 启动时会把超时卡住的 `sending` 任务重置为 `pending`。
 - `SMTP_TLS_MODE=starttls` 会显式执行 STARTTLS 握手；`implicit` 用于 465 端口隐式 TLS；`none` 用于无 TLS 的内网 SMTP。
-- 告警中心的“发送测试邮件”按钮会创建一条测试通知，并通过同一个 notifier 队列发送，结果可在邮件通知记录中查看。
+- 告警中心的邮件和企业微信测试按钮都会创建通知记录，并通过同一个 notifier 队列发送，结果可在通知发送记录中查看。
 
 **环境变量**
 
@@ -863,6 +868,18 @@ curl http://localhost:13000/api/metrics/definitions
 
 发送测试邮件。默认使用页面保存的收件邮箱，未保存时使用 `.env` 中的 `ALERT_EMAIL_TO`，也可以传入 `target` 或 `targets` 覆盖收件人。接口会把测试通知写入 `alert_notifications` 队列，由 `snmp-monitor-notifier` 异步发送。
 
+#### 企业微信自建应用通知
+
+在“告警中心”打开“企业微信应用配置”，填写企业 ID（CorpID）、应用 AgentId、应用 Secret 和接收成员的 UserID。先在企业微信管理后台创建自建应用，并确认接收成员处于应用可见范围；如企业配置了可信 IP 限制，还需允许服务器的出口 IP。Secret 使用 AES-256-GCM 加密后保存在 PostgreSQL，API 不返回 Secret；加密密钥由 `JWT_SECRET` 派生，升级时须沿用原值。
+
+企业微信通知与邮件并行写入 `alert_notifications`，渠道为 `wecom_app`，由现有 `snmp-monitor-notifier` 获取并缓存应用 access token 后调用应用消息 API。触发和恢复通知可分别控制；发送状态、错误和重试入口统一显示在通知记录中。配置保存后无需重启服务。服务器需要通过 HTTPS 访问 `qyapi.weixin.qq.com`；多个成员 UserID 可逐行填写，最多 100 个。
+
+- `GET /api/alerts/wecom-config`：读取配置状态，不返回 Secret。
+- `PATCH /api/alerts/wecom-config`：管理员更新配置；Secret 留空表示保留原值，可显式清除。
+- `POST /api/alerts/notifications/test-wecom`：将测试消息加入队列，实际结果在通知记录中查看。
+
+新增迁移 `013_wecom_app_notifications.sql`。企业微信连接或凭证错误会记录在对应通知中并按队列策略重试；不会阻止邮件渠道继续发送。
+
 #### `GET /api/metrics/samples`
 
 查询采集样本。
@@ -1181,7 +1198,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.7` 导出八个运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史 v1.6.0 及本地包保持原样，不能用新数据库镜像覆盖同版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.8` 导出运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史离线包保持原样，不能用新数据库镜像覆盖旧版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 

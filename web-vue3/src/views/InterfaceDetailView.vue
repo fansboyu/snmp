@@ -5,14 +5,17 @@ import { ElMessage } from 'element-plus'
 import type { EChartsOption } from 'echarts'
 import EChartCard from '../components/EChartCard.vue'
 import MetricCard from '../components/MetricCard.vue'
-import { Download, Upload, TrendCharts } from '@element-plus/icons-vue'
-import { getPort, getPortTraffic, getPortSummary, listInterfaces, listAlertEvents, savePortNote, type DeviceInterface, type PortTrafficResult, type PortTrafficSummary, type AlertEvent } from '../services/api'
+import { Download, Upload, TrendCharts, Connection, Monitor } from '@element-plus/icons-vue'
+import { getPort, getPortTraffic, getPortSummary, getPortEndpoints, requestTopologyScan, listInterfaces, listAlertEvents, savePortNote, type DeviceInterface, type PortTrafficResult, type PortTrafficSummary, type AlertEvent, type InterfaceEndpointResult } from '../services/api'
 import { formatRate, localTime, dataStatusNames, qualityNames } from '../services/traffic-format'
 import { usePortFavorites } from '../services/port-favorites'
 const route=useRoute(),router=useRouter()
 const deviceId=computed(()=>String(route.params.deviceId)),portId=computed(()=>String(route.params.interfaceId))
 const port=ref<DeviceInterface|null>(null),traffic=ref<PortTrafficResult|null>(null),summary=ref<PortTrafficSummary|null>(null)
 const siblings=ref<DeviceInterface[]>([]),events=ref<AlertEvent[]>([]),loading=ref(false),error=ref('')
+const endpoints=ref<InterfaceEndpointResult|null>(null)
+const endpointError=ref('')
+const endpointScanSubmitting=ref(false)
 const range=ref('1h'),custom=ref<[Date,Date]|null>(null),measure=ref('rate'),autoRefresh=ref(true),note=ref(''),saving=ref(false)
 const favorites=usePortFavorites()
 const favorite=computed(()=>favorites.ids.value.includes(portId.value))
@@ -37,13 +40,13 @@ const chart=computed<EChartsOption>(()=>({
 }))
 async function load(){
   const current=++sequence;controller?.abort();controller=new AbortController();const signal=controller.signal
-  loading.value=true;error.value=''
+  loading.value=true;error.value='';endpointError.value=''
   const params:Record<string,string>={deviceId:deviceId.value,range:range.value}
   if(custom.value){params.start=custom.value[0].toISOString();params.end=custom.value[1].toISOString()}
   try{
-    const [p,t,s]=await Promise.all([getPort(portId.value,deviceId.value,signal),getPortTraffic(portId.value,params,signal),getPortSummary(portId.value,deviceId.value,signal)])
+    const [p,t,s,endpointResult]=await Promise.all([getPort(portId.value,deviceId.value,signal),getPortTraffic(portId.value,params,signal),getPortSummary(portId.value,deviceId.value,signal),getPortEndpoints(portId.value,deviceId.value,signal).catch((cause:unknown)=>{if(current===sequence&&!signal.aborted)endpointError.value=cause instanceof Error?cause.message:'终端观测读取失败';return null})])
     if(current!==sequence)return
-    port.value=p;traffic.value=t;summary.value=s;note.value=p.user_note||''
+    port.value=p;traffic.value=t;summary.value=s;endpoints.value=endpointResult;note.value=p.user_note||''
     const e=await listAlertEvents({interfaceId:portId.value,deviceId:deviceId.value,limit:30})
     if(current===sequence)events.value=e
   }catch(e){if(current===sequence&&!signal.aborted){error.value=e instanceof Error?e.message:'加载失败';port.value=null;traffic.value=null;summary.value=null;events.value=[]}}
@@ -51,9 +54,10 @@ async function load(){
 }
 async function loadSiblings(){const seq=++siblingSequence;try{const result=await listInterfaces({deviceId:deviceId.value,metadataOnly:'true'});if(seq===siblingSequence)siblings.value=result}catch{siblings.value=[]}}
 async function saveNote(){const id=portId.value,value=note.value;saving.value=true;try{await savePortNote(id,value);if(port.value&&portId.value===id)port.value.user_note=value;ElMessage.success('业务备注已保存')}catch(e){ElMessage.error(e instanceof Error?e.message:'保存失败')}finally{saving.value=false}}
+async function scanEndpoints(){endpointScanSubmitting.value=true;try{await requestTopologyScan(deviceId.value);ElMessage.success('已加入该设备的采集队列；采集完成后本页会刷新终端观测')}catch(e){ElMessage.error(e instanceof Error?e.message:'提交终端采集失败')}finally{endpointScanSubmitting.value=false}}
 function changePort(id:string){router.push(`/devices/${deviceId.value}/interfaces/${id}`)}
 function changeRange(){custom.value=null;load()}
-watch([deviceId,portId],()=>{port.value=null;traffic.value=null;summary.value=null;events.value=[];load();loadSiblings()},{immediate:true})
+watch([deviceId,portId],()=>{port.value=null;traffic.value=null;summary.value=null;endpoints.value=null;events.value=[];load();loadSiblings()},{immediate:true})
 const timer=setInterval(()=>{if(autoRefresh.value&&!loading.value&&!saving.value&&note.value===(port.value?.user_note||'')&&!document.hidden)load()},60000)
 onUnmounted(()=>{sequence++;siblingSequence++;controller?.abort();clearInterval(timer)})
 </script>
@@ -63,6 +67,23 @@ onUnmounted(()=>{sequence++;siblingSequence++;controller?.abort();clearInterval(
   <el-alert v-if="error" :title="error" type="error" :closable="false" />
   <template v-if="port">
    <el-card class="page-card"><div class="port-identity"><el-select :model-value="portId" filterable placeholder="切换端口" @change="changePort"><el-option v-for="p in siblings" :key="p.id" :value="String(p.id)" :label="`${p.if_name||p.if_descr} · ${p.user_note||p.if_alias||''}`" /></el-select><el-tag :type="oper==='UP'?'success':oper==='DOWN'?'danger':'info'">{{oper}}</el-tag><span>管理状态：{{admin}}</span><span>端口速率：{{formatRate(Number(port.speed_bps)||null)}}</span><el-tag :type="summary?.data_status==='fresh'?'success':'warning'">{{dataStatusNames[summary?.data_status||'no_data']}}</el-tag></div><div class="port-note"><span>业务备注</span><el-input v-model="note" maxlength="200" placeholder="例如 办公区上联；独立于设备 SNMP 备注" /><el-button :loading="saving" @click="saveNote">保存</el-button></div><p class="port-meta">设备备注：{{port.if_alias||'—'}} · 最后流量采样：{{localTime(summary?.sampled_at)}} · 实际采样间隔：{{summary?.sample_interval_seconds?`${summary.sample_interval_seconds.toFixed(0)} 秒`:'—'}}</p></el-card>
+   <el-card class="page-card dashboard-row endpoint-card">
+    <template #header><div class="endpoint-heading"><span><el-icon><Connection /></el-icon>此端口下游学习到的终端</span><div class="endpoint-tags"><el-tag v-if="endpoints?.port_evidence?.likely_uplink" size="small" type="warning">可能是上联口</el-tag><el-tag size="small" type="info">基于 SNMP 观测</el-tag><el-button size="small" :loading="endpointScanSubmitting" @click="scanEndpoints">立即采集</el-button></div></div></template>
+    <p v-if="endpoints?.port_evidence" class="port-meta endpoint-meta">FDB MAC {{endpoints.port_evidence.mac_count}} 个 · 当前 LLDP/CDP 邻居 {{endpoints.port_evidence.neighbor_count}} 个<span v-if="endpoints.port_evidence.likely_uplink"> · 聚合的下游终端可能实际位于更下层交换机端口</span></p>
+    <el-alert v-if="endpointError" class="endpoint-alert" type="error" :closable="false" :title="`端口终端信息读取失败：${endpointError}`" />
+    <el-alert type="info" :closable="false" title="IP 由网关 ARP 与交换机 MAC 表按 VLAN/MAC 关联推导；上联口可能显示下游多台设备，不代表终端直接插在此端口。当前支持 IPv4 ARP 关联。" />
+    <div v-if="endpoints?.scans?.length" class="endpoint-scan-status">
+      <span v-for="scan in endpoints.scans" :key="scan.protocol"><el-tag size="small" :type="['success','empty'].includes(scan.status)?'success':'warning'">{{scan.protocol}}</el-tag> {{scan.reason}} · {{localTime(scan.checked_at)}}</span>
+    </div>
+    <el-table :data="endpoints?.items||[]" empty-text="暂无端口 MAC/IP 观测；确认交换机开放 BRIDGE/Q-BRIDGE，网关开放 ARP SNMP 表，并等待一次邻居采集。">
+      <el-table-column prop="vlan_id" label="VLAN" width="80"><template #default="{row}">{{row.vlan_id||'未知'}}</template></el-table-column>
+      <el-table-column label="IP 地址" min-width="150"><template #default="{row}"><span v-if="row.ip_address" class="endpoint-value"><el-icon><Monitor /></el-icon>{{row.ip_address}}</span><el-tag v-else size="small" type="info">仅发现 MAC</el-tag></template></el-table-column>
+      <el-table-column prop="mac_address" label="MAC 地址" min-width="165" />
+      <el-table-column label="关联可信度" width="160"><template #default="{row}"><el-tag :type="row.confidence==='high'?'success':row.confidence==='medium'?'warning':row.confidence==='ambiguous'?'danger':'info'">{{row.confidence==='high'?'VLAN 精确匹配':row.confidence==='medium'?'唯一 MAC 候选':row.confidence==='ambiguous'?(row.ip_source_count>1?'IP 来源有歧义':row.mac_location_count>1?'MAC 位于多端口':'关联有歧义'):'无 IP 关联'}}</el-tag></template></el-table-column>
+      <el-table-column label="IP 来源设备" min-width="145"><template #default="{row}">{{row.ip_source_device_name||'—'}}<div v-if="row.ip_source_if_index" class="port-meta">ifIndex {{row.ip_source_if_index}}</div></template></el-table-column>
+      <el-table-column label="最近观测" min-width="160"><template #default="{row}">MAC {{localTime(row.mac_seen_at)}}<div v-if="row.ip_seen_at" class="port-meta">IP {{localTime(row.ip_seen_at)}}</div></template></el-table-column>
+    </el-table>
+   </el-card>
    <el-row :gutter="16" class="dashboard-row"><el-col :xs="24" :sm="8"><MetricCard title="当前入速率" :value="formatRate(summary?.in_bps)" :description="usage(summary?.in_utilization)" :icon="Download" /></el-col><el-col :xs="24" :sm="8"><MetricCard title="当前出速率" :value="formatRate(summary?.out_bps)" :description="usage(summary?.out_utilization)" :icon="Upload" /></el-col><el-col :xs="24" :sm="8"><MetricCard title="所选时段入峰值" :value="formatRate(traffic?.stats.in.peak_bps)" description="最大有效采样平均速率" :icon="TrendCharts" /></el-col></el-row>
    <el-alert v-if="summary?.data_status!=='fresh'" class="dashboard-row" type="warning" :closable="false" :title="dataHint" />
    <el-card class="page-card dashboard-row"><div class="port-tools"><el-radio-group v-model="range" @change="changeRange"><el-radio-button value="1h">1 小时</el-radio-button><el-radio-button value="6h">6 小时</el-radio-button><el-radio-button value="24h">24 小时</el-radio-button></el-radio-group><el-date-picker v-model="custom" type="datetimerange" start-placeholder="开始时间" end-placeholder="结束时间" @change="load" /><el-radio-group v-model="measure"><el-radio-button value="rate">速率</el-radio-button><el-radio-button value="util">利用率</el-radio-button></el-radio-group></div><p class="port-meta">{{localTime(traffic?.start)}} — {{localTime(traffic?.end)}} · {{traffic?.resolution}}</p></el-card>
@@ -75,5 +96,5 @@ onUnmounted(()=>{sequence++;siblingSequence++;controller?.abort();clearInterval(
  </div>
 </template>
 <style scoped>
-.port-identity,.port-note,.port-tools{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.port-note{margin-top:16px}.port-note .el-input{flex:1;min-width:180px}.port-identity .el-select{width:260px}.port-meta{color:#64748b;font-size:13px;margin:14px 0 0}
+.port-identity,.port-note,.port-tools{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.port-note{margin-top:16px}.port-note .el-input{flex:1;min-width:180px}.port-identity .el-select{width:260px}.port-meta{color:#64748b;font-size:13px;margin:14px 0 0}.endpoint-heading,.endpoint-heading>span,.endpoint-value,.endpoint-tags{display:flex;align-items:center;gap:7px}.endpoint-heading{justify-content:space-between}.endpoint-heading>span .el-icon,.endpoint-value .el-icon{color:var(--el-color-primary)}.endpoint-meta{margin:8px 0}.endpoint-scan-status{display:grid;gap:6px;margin:12px 0;color:#64748b;font-size:12px}
 </style>

@@ -14,6 +14,7 @@ import (
 
 	"github.com/gosnmp/gosnmp"
 	"snmp-monitor/collector-go/internal/mailconfig"
+	"snmp-monitor/collector-go/internal/wecomconfig"
 )
 
 type Store interface {
@@ -63,15 +64,17 @@ func (engine Engine) cleanupOldData(ctx context.Context) {
 		stats.RollupSamples > 0 ||
 		stats.ResolvedAlerts > 0 ||
 		stats.AlertNotifications > 0 ||
-		stats.DiscoveryJobs > 0 {
+		stats.DiscoveryJobs > 0 ||
+		stats.EndpointObservations > 0 {
 		log.Printf(
-			"cleanup old data completed: metric_samples=%d interface_samples=%d rollup_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d",
+			"cleanup old data completed: metric_samples=%d interface_samples=%d rollup_samples=%d resolved_alerts=%d alert_notifications=%d discovery_jobs=%d endpoint_observations=%d",
 			stats.MetricSamples,
 			stats.InterfaceSamples,
 			stats.RollupSamples,
 			stats.ResolvedAlerts,
 			stats.AlertNotifications,
 			stats.DiscoveryJobs,
+			stats.EndpointObservations,
 		)
 	}
 }
@@ -428,40 +431,49 @@ func (engine Engine) resolveAlertEvent(ctx context.Context, ruleID int64, device
 }
 
 func (engine Engine) queueAlertNotifications(ctx context.Context, event AlertEvent, action string) {
+	if event.ID == 0 {
+		return
+	}
+	settings := engine.Notifications
 	if store, ok := engine.Store.(interface {
 		LoadMailConfig(context.Context) (*mailconfig.Config, error)
 	}); ok {
 		config, err := store.LoadMailConfig(ctx)
 		if err != nil {
 			log.Printf("load email notification config failed: %v", err)
-			return
-		}
-		if config != nil {
-			engine.Notifications = NotificationSettings{Enabled: config.EmailEnabled, Targets: config.EmailTo, SendResolved: config.SendResolved, SubjectPrefix: config.SubjectPrefix}
+		} else if config != nil {
+			settings = NotificationSettings{Enabled: config.EmailEnabled, Targets: config.EmailTo, SendResolved: config.SendResolved, SubjectPrefix: config.SubjectPrefix}
 		}
 	}
-	if action == "resolved" && !engine.Notifications.SendResolved {
-		return
-	}
-	if !engine.Notifications.Enabled || len(engine.Notifications.Targets) == 0 || event.ID == 0 {
-		return
-	}
-	subject := alertNotificationSubject(engine.Notifications.SubjectPrefix, event, action)
-	message := alertNotificationMessage(event, action)
-	for _, target := range engine.Notifications.Targets {
-		target = strings.TrimSpace(target)
-		if target == "" {
-			continue
+	if (action != "resolved" || settings.SendResolved) && settings.Enabled && len(settings.Targets) > 0 {
+		subject := alertNotificationSubject(settings.SubjectPrefix, event, action)
+		message := alertNotificationMessage(event, action)
+		for _, target := range settings.Targets {
+			target = strings.TrimSpace(target)
+			if target == "" {
+				continue
+			}
+			err := engine.Store.CreateAlertNotification(ctx, AlertNotification{EventID: event.ID, Channel: "email", Target: target, Subject: subject, Message: message})
+			if err != nil {
+				log.Printf("queue email notification failed: %v", err)
+			}
 		}
-		err := engine.Store.CreateAlertNotification(ctx, AlertNotification{
-			EventID: event.ID,
-			Channel: "email",
-			Target:  target,
-			Subject: subject,
-			Message: message,
-		})
+	}
+	if store, ok := engine.Store.(interface {
+		LoadWeComConfig(context.Context) (*wecomconfig.Config, error)
+	}); ok {
+		config, err := store.LoadWeComConfig(ctx)
 		if err != nil {
-			log.Printf("queue alert notification failed: %v", err)
+			log.Printf("load WeCom notification config failed: %v", err)
+		} else if config != nil && config.Enabled && len(config.UserIDs) > 0 && (action != "resolved" || config.SendResolved) {
+			err := engine.Store.CreateAlertNotification(ctx, AlertNotification{
+				EventID: event.ID, Channel: "wecom_app", Target: strings.Join(config.UserIDs, "|"),
+				Subject: alertNotificationSubject("[SNMP Monitor]", event, action),
+				Message: alertNotificationMessage(event, action),
+			})
+			if err != nil {
+				log.Printf("queue WeCom notification failed: %v", err)
+			}
 		}
 	}
 }

@@ -249,7 +249,7 @@ func (c *Collector) persist(ctx context.Context, events []Event) error {
 		select s.received_at, s.reported_at, s.source_ip::inet, s.hostname, d.id, s.facility, s.severity,
 			s.app_name, s.procid, s.msgid, s.structured_data, s.syslog_version, s.parsed, s.message, s.raw_message
 		from syslog_event_stage s
-		left join devices d on d.host = s.source_ip
+		left join devices d on d.host = s.source_ip::inet
 	`)
 	if err != nil {
 		return err

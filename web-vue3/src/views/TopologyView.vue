@@ -1150,7 +1150,11 @@ watch(maximized, async () => {
       有效证据 {{ data.discovery.summary.evidence }} 条 · 待确认邻居
       {{ data.discovery.summary.unmatched }} 条 · 端口映射不完整
       {{ data.discovery.summary.unmapped_ports }} 条 · 当前自动连接
-      {{ data.discovery.summary.links }} 条。
+      {{ data.discovery.summary.links }} 条 · 身份冲突
+      {{ data.discovery.summary.conflicts }} 条 · 弱名称待确认
+      {{ data.discovery.summary.needs_confirmation }} 条 · 单向证据连接
+      {{ data.discovery.summary.single_sided_links }} 条 · 过期证据
+      {{ data.discovery.summary.stale_evidence }} 条。
       同步结果不会立即扫描网络；需要重新读取时请使用“发现诊断 / 立即采集”。
     </el-alert>
     <el-alert
@@ -1546,7 +1550,7 @@ watch(maximized, async () => {
     </div>
     <el-dialog v-model="discoveryVisible" title="邻居发现诊断" width="min(1100px,95vw)">
       <p>
-        采集只读取已纳管设备的 LLDP/CDP。默认邻居周期 10
+        拓扑关系主要依据已纳管设备的 LLDP/CDP；FDB/ARP 仅用于补充端口终端观测，不能单独证明设备物理互联。默认邻居周期 10
         分钟；手动请求共用有界工作池，可能需要等待正在执行的设备任务结束。无邻居或协议不可见不代表断线。
       </p>
       <el-table :data="data?.discovery?.devices || []" max-height="540">
@@ -1571,6 +1575,10 @@ watch(maximized, async () => {
             </p>
             <p v-for="s in row.scans" :key="s.protocol">
               {{ s.protocol.toUpperCase() }}：{{ scanNames[s.status] || s.status }} ·
+              {{ s.neighbor_count }} 条 · {{ s.reason }} · {{ localTime(s.checked_at) }}
+            </p>
+            <p v-for="s in row.endpoint_scans" :key="s.protocol">
+              终端数据 {{ s.protocol.toUpperCase() }}：{{ scanNames[s.status] || s.status }} ·
               {{ s.neighbor_count }} 条 · {{ s.reason }} · {{ localTime(s.checked_at) }}
             </p>
           </template></el-table-column

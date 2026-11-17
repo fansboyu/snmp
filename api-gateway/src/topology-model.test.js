@@ -137,7 +137,16 @@ test('stale neighbor evidence is not a physical link failure, fresh endpoint evi
     deriveLinkState(link, [{ ...p[0], admin_status: '2' }, p[1]], [], [], now).status,
     'disabled',
   )
-  assert.equal(deriveLinkState(link, [], [], [{ device_status: 'offline' }], now).status, 'down')
+  assert.equal(
+    deriveLinkState(link, [], [{ stale: false, last_seen_at: current }], [{ device_status: 'offline' }], now).status,
+    'unconfirmed',
+    'device unreachability alone does not prove that the physical link is down',
+  )
+  assert.equal(
+    deriveLinkState(link, [], [], [{ device_status: 'offline' }], now).status,
+    'stale',
+    'expired neighbor evidence remains stale rather than link-down',
+  )
   assert.equal(
     deriveLinkState({ ...link, auto_discovered: false }, [], [], [], now).status,
     'unknown',

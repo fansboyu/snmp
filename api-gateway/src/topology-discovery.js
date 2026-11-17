@@ -1,6 +1,8 @@
 export function discoveryDiagnostics(inventory, links, now = Date.now()) {
   const devices = inventory.devices.map((device) => {
-    const scans = inventory.scans.filter((s) => String(s.device_id) === String(device.id))
+    const deviceScans = inventory.scans.filter((s) => String(s.device_id) === String(device.id))
+    const scans = deviceScans.filter((s) => ['lldp','cdp'].includes(s.protocol))
+    const endpointScans = deviceScans.filter((s) => ['qbridge_fdb','bridge_fdb','arp'].includes(s.protocol))
     const request = inventory.requests?.find((r) => String(r.device_id) === String(device.id))
     const checked = scans.reduce((time, s) => Math.max(time, Date.parse(s.checked_at) || 0), 0)
     const current = scans.filter((s) => now - Date.parse(s.checked_at) < 1200000)
@@ -40,11 +42,13 @@ export function discoveryDiagnostics(inventory, links, now = Date.now()) {
       checked_at: checked ? new Date(checked).toISOString() : null,
       request,
       scans,
+      endpoint_scans: endpointScans,
     }
   })
   const active = inventory.neighbors.filter(
     (n) => !n.stale && now - Date.parse(n.last_seen_at) < 1200000,
   )
+  const stale = inventory.neighbors.filter((n) => n.stale || now - Date.parse(n.last_seen_at) >= 1200000)
   return {
     devices,
     summary: {
@@ -54,9 +58,13 @@ export function discoveryDiagnostics(inventory, links, now = Date.now()) {
       pending: devices.filter((d) => ['pending', 'running'].includes(d.status)).length,
       evidence: active.length,
       unmatched: active.filter((n) => n.match_state !== 'matched').length,
+      conflicts: active.filter((n) => n.match_state === 'conflict').length,
+      needs_confirmation: active.filter((n) => n.match_state === 'needs_confirmation').length,
       unmapped_ports: active.filter(
         (n) => n.match_state === 'matched' && (!n.local_interface_id || !n.remote_interface_id),
       ).length,
+      single_sided_links: links.filter((l) => l.lifecycle !== 'history' && l.auto_discovered && l.status !== 'stale' && l.confirmation === 'single').length,
+      stale_evidence: stale.length,
       links: links.filter((l) => l.lifecycle!=='history' && l.auto_discovered && l.status !== 'stale').length,
     },
   }
