@@ -34,7 +34,7 @@ if a[0]=='exec':
  if 'psql' in a:done('180006|false' if 'server_version_num' in a[-1] else '9')
  if 'pg_dump' in a:(root/'dump').write_bytes(b'fake-custom-dump');done()
  if 'pg_restore' in a:done('fake archive contents')
- if 'node' in a and '-p' in a:done('1.6.8')
+ if 'node' in a and '-p' in a:done('1.6.9')
  done()
 if a[0]=='compose':
  if 'version' in a:done('Compose 2.30')
@@ -68,8 +68,8 @@ class UpgradeTests(unittest.TestCase):
             'Mounts':[{'Type':'volume','Name':'customer_pg','Destination':'/var/lib/postgresql'}]}]))
         with tarfile.open(self.root/'source.tar.gz','w:gz') as archive:
             for folder in ['api-gateway','web-vue3']:
-                data=b'{"version":"1.6.8"}'
-                m=tarfile.TarInfo(f'snmp-1.6.8/{folder}/package.json');m.size=len(data)
+                data=b'{"version":"1.6.9"}'
+                m=tarfile.TarInfo(f'snmp-1.6.9/{folder}/package.json');m.size=len(data)
                 archive.addfile(m,io.BytesIO(data))
         bin_dir=self.root/'bin';bin_dir.mkdir()
         for name in ['docker','curl']:
@@ -90,7 +90,7 @@ class UpgradeTests(unittest.TestCase):
 
     def test_precheck_pins_volume_contexts_and_literal_secrets(self):
         r=self.run_upgrade(CHECK_ONLY='1');self.assertEqual(r.returncode,0,r.stdout+r.stderr)
-        folder=next(self.root.glob('source-v1.6.8-*'))
+        folder=next(self.root.glob('source-v1.6.9-*'))
         config=json.loads((folder/'docker-compose.yml').read_text())
         self.assertEqual(config['volumes']['pg'],{'external':True,'name':'customer_pg'})
         self.assertEqual(config['services']['postgres']['environment']['POSTGRES_PASSWORD'],'p$$a$$$$word')

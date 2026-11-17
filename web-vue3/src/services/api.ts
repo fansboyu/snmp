@@ -941,6 +941,87 @@ export interface SyslogEventQuery {
   page?: number
   pageSize?: number
 }
+
+export interface ConfigBackupProfile {
+  device_id?: string
+  protocol: 'ssh' | 'netconf'
+  platform: 'cisco_ios' | 'huawei_vrp' | 'h3c_comware'
+  port: number
+  username: string
+  auth_mode?: 'password' | 'private_key'
+  host_key_fingerprint: string
+  enabled: boolean
+  interval_hours: number
+  retention_count: number
+  last_backup_at?: string | null
+  credential_configured: boolean
+}
+export interface ConfigBackupRow {
+  device_id: string
+  device_name: string
+  host: string
+  enabled: boolean
+  protocol?: string | null
+  platform?: string | null
+  interval_hours?: number | null
+  retention_count?: number | null
+  credential_configured: boolean
+  last_backup_at?: string | null
+  latest_version_id?: string | null
+  latest_version_at?: string | null
+  latest_sha256?: string | null
+  latest_changed?: boolean | null
+  latest_size_bytes?: number | null
+  latest_job_id?: string | null
+  latest_job_status?: 'queued' | 'running' | 'succeeded' | 'failed' | null
+  latest_job_trigger?: 'manual' | 'scheduled' | null
+  latest_job_requested_at?: string | null
+  latest_job_finished_at?: string | null
+  latest_job_error?: string | null
+  latest_job_attempts?: number | null
+}
+export interface ConfigBackupVersion {
+  id: string
+  device_id: string
+  created_at: string
+  sha256: string
+  size_bytes: number
+  baseline: boolean
+  changed: boolean
+  previous_version_id: string | null
+  trigger_type: string
+  status: string
+}
+export interface ConfigBackupDiff {
+  baseline: boolean
+  changed: boolean
+  details_available: boolean
+  added: string[]
+  removed: string[]
+  previous_created_at?: string
+  message?: string
+}
+
+const jsonRequest = (method: string, payload: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+export const getConfigBackupOverview = (): Promise<{items: ConfigBackupRow[]}> => request('/api/config-backups')
+export const getConfigBackupProfile = (deviceId: string): Promise<ConfigBackupProfile> => request(`/api/config-backups/devices/${deviceId}/profile`)
+export const saveConfigBackupProfile = (deviceId: string, payload: Record<string, unknown>): Promise<ConfigBackupProfile> => request(`/api/config-backups/devices/${deviceId}/profile`, jsonRequest('PUT', payload))
+export const requestConfigBackup = (deviceId: string): Promise<{id: string; status: string}> => request(`/api/config-backups/devices/${deviceId}/run`, { method: 'POST' })
+export const getConfigBackupVersions = (deviceId: string): Promise<{items: ConfigBackupVersion[]}> => request(`/api/config-backups/devices/${deviceId}/versions`)
+export const getConfigBackupJobs = (): Promise<{items: Array<Record<string, unknown>>}> => request('/api/config-backups/jobs')
+export const getConfigBackupDiff = (versionId: string): Promise<ConfigBackupDiff> => request(`/api/config-backups/versions/${versionId}/diff`)
+export async function downloadConfigBackup(versionId: string): Promise<Blob> {
+  const headers = new Headers()
+  const token = getAuthToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(`/api/config-backups/versions/${versionId}/download`, { headers })
+  if (!response.ok) {
+    const error = await response.json().catch(() => null)
+    throw new Error(error?.message || `请求失败：${response.status}`)
+  }
+  return response.blob()
+}
+
 export const getSyslogStatus = (): Promise<SyslogStatus> => request('/api/syslog/status')
 export const getSyslogEvents = (params: SyslogEventQuery): Promise<SyslogEventPage> => {
   const query = new URLSearchParams()

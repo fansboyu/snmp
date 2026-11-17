@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"snmp-monitor/collector-go/internal/collector"
+	"snmp-monitor/collector-go/internal/configbackup"
 	"snmp-monitor/collector-go/internal/database"
 )
 
@@ -82,8 +83,17 @@ func main() {
 	}
 
 	log.Println("collector started")
+	backupDone := make(chan error, 1)
+	go func() {
+		backupDone <- (configbackup.Service{Store: db, Secret: env("JWT_SECRET", "snmp-monitor-dev-secret")}).Run(ctx)
+	}()
 	if err := engine.Run(ctx); err != nil {
+		stop()
 		log.Fatalf("collector stopped: %v", err)
+	}
+	stop()
+	if err := <-backupDone; err != nil {
+		log.Fatalf("configuration backup scheduler stopped: %v", err)
 	}
 }
 

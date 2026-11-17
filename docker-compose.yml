@@ -78,6 +78,7 @@ services:
     container_name: snmp-monitor-collector
     environment:
       DATABASE_URL: postgres://snmp:snmp@postgres:5432/snmp_monitor?sslmode=disable
+      JWT_SECRET: ${JWT_SECRET:-snmp-monitor-dev-secret}
       COLLECT_INTERVAL_SECONDS: 60
       DEVICE_COLLECT_TIMEOUT_SECONDS: ${DEVICE_COLLECT_TIMEOUT_SECONDS:-45}
       NEIGHBOR_INTERVAL_SECONDS: ${NEIGHBOR_INTERVAL_SECONDS:-600}

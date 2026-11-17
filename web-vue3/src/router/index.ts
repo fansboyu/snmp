@@ -12,6 +12,7 @@ import LoginView from '../views/LoginView.vue'
 import MetricsView from '../views/MetricsView.vue'
 import TopologyView from '../views/TopologyView.vue'
 import SyslogView from '../views/SyslogView.vue'
+import ConfigBackupsView from '../views/ConfigBackupsView.vue'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: LoginView, meta: { public: true, title: '登录' } },
@@ -29,6 +30,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'metrics', name: 'metrics', component: MetricsView, meta: { title: '指标管理' } },
       { path: 'alerts', name: 'alerts', component: AlertsView, meta: { title: '告警中心' } },
       { path: 'syslog', name: 'syslog', component: SyslogView, meta: { title: '系统日志' } },
+      { path: 'config-backups', name: 'config-backups', component: ConfigBackupsView, meta: { title: '配置备份' } },
       { path: 'latest', name: 'latest', component: LatestDataView, meta: { title: '最新数据' } }
     ]
   },

@@ -6,6 +6,7 @@ import {
   Collection,
   DataLine,
   Document,
+  DocumentCopy,
   Expand,
   Fold,
   House,
@@ -115,6 +116,10 @@ async function changePassword(): Promise<void> {
         <el-menu-item index="/syslog">
           <el-icon><Document /></el-icon>
           <span>系统日志</span>
+        </el-menu-item>
+        <el-menu-item index="/config-backups">
+          <el-icon><DocumentCopy /></el-icon>
+          <span>配置备份</span>
         </el-menu-item>
         <el-menu-item index="/latest">
           <el-icon><DataLine /></el-icon>

@@ -6,6 +6,7 @@ import { dbPlugin } from './plugins/db.js'
 import { alertRoutes } from './routes/alerts.js'
 import { authRoutes } from './routes/auth.js'
 import { chartRoutes } from './routes/charts.js'
+import { configBackupRoutes } from './routes/config-backups.js'
 import { healthRoutes } from './routes/health.js'
 import { deviceGroupRoutes } from './routes/device-groups.js'
 import { deviceRoutes } from './routes/devices.js'
@@ -66,6 +67,7 @@ await app.register(healthRoutes, { prefix: '/health' })
 await app.register(authRoutes, { prefix: '/api/auth' })
 await app.register(alertRoutes, { prefix: '/api/alerts' })
 await app.register(chartRoutes, { prefix: '/api/charts' })
+await app.register(configBackupRoutes, { prefix: '/api/config-backups' })
 await app.register(deviceGroupRoutes, { prefix: '/api/device-groups' })
 await app.register(deviceRoutes, { prefix: '/api/devices' })
 await app.register(discoveryRoutes, { prefix: '/api/discovery' })
