@@ -2,8 +2,11 @@ package database
 
 import (
 	"context"
+	"errors"
 	"snmp-monitor/collector-go/internal/collector"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const activitySQL = `greatest(d.created_at,
@@ -40,7 +43,7 @@ func (store *PostgresStore) ListHealthCandidates(ctx context.Context, stale time
 	return candidates, rows.Err()
 }
 
-func (store *PostgresStore) SaveHealthObservation(ctx context.Context, id int64, o collector.HealthObservation, last, configUpdated time.Time) error {
+func (store *PostgresStore) SaveHealthObservation(ctx context.Context, id int64, o collector.HealthObservation, last, configUpdated time.Time) (string, error) {
 	status := "checking"
 	failures := 1
 	if o.SNMPOK || o.PingOK {
@@ -50,7 +53,8 @@ func (store *PostgresStore) SaveHealthObservation(ctx context.Context, id int64,
 		status = "unknown"
 		failures = 0
 	}
-	_, err := store.pool.Exec(ctx, `
+	var finalStatus string
+	err := store.pool.QueryRow(ctx, `
  insert into device_health(device_id,checked_at,status,consecutive_failures,first_failed_at,reason,snmp_ok,ping_ok)
  select d.id,now(),$2,$3,case when $3=1 then now() end,$4,$5,$6
  from devices d where d.id=$1 and d.enabled and d.updated_at=$8 and `+activitySQL+` <= $7
@@ -61,6 +65,15 @@ func (store *PostgresStore) SaveHealthObservation(ctx context.Context, id int64,
  status=case when $3=0 then $2 when device_health.checked_at >= greatest($7,$8)
  and device_health.checked_at >= now()-interval '90 seconds'
  and device_health.consecutive_failures+1>=3 and device_health.first_failed_at<=now()-interval '60 seconds'
- then 'offline' else 'checking' end`, id, status, failures, o.Reason, o.SNMPOK, o.PingOK, last, configUpdated)
+	 then 'offline' else 'checking' end
+	 returning status`, id, status, failures, o.Reason, o.SNMPOK, o.PingOK, last, configUpdated).Scan(&finalStatus)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return finalStatus, err
+}
+
+func (store *PostgresStore) ResetDeviceHealth(ctx context.Context, id int64) error {
+	_, err := store.pool.Exec(ctx, `delete from device_health where device_id=$1`, id)
 	return err
 }

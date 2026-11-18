@@ -1,4 +1,4 @@
-# 从原源码 Docker 部署升级到 v1.6.9
+# 从原源码 Docker 部署升级到 v1.6.10
 
 把 `upgrade-source.sh` 下载到客户电脑，在 WSL/Linux Bash 中执行。需要 Docker Engine、Docker Compose、Python 3.9+、curl、tar、sha256sum 和 flock。Ubuntu 通常已带齐，脚本会检查缺失项。不是 Windows PowerShell 脚本，也不适用于离线安装包或 PostgreSQL 16→18 主版本迁移。
 
@@ -14,7 +14,7 @@ bash /mnt/c/Users/user/Downloads/upgrade-source.sh /opt/netlooker/source-v1.6.1
 bash /mnt/c/Users/user/Downloads/upgrade-source.sh
 ```
 
-默认下载 GitHub v1.6.9，保留原项目名，使用新的独立源码目录，不覆盖原目录。只尝试启动原数据库容器一次，默认最多等待 10 分钟恢复到可连接且非 recovery 状态。恢复失败时停止，不会清空数据库或重建 PostgreSQL。
+默认下载 GitHub v1.6.10，保留原项目名，使用新的独立源码目录，不覆盖原目录。只尝试启动原数据库容器一次，默认最多等待 10 分钟恢复到可连接且非 recovery 状态。恢复失败时停止，不会清空数据库或重建 PostgreSQL。
 
 如需先预检：
 
@@ -33,11 +33,11 @@ CHECK_ONLY=1 bash /mnt/c/Users/user/Downloads/upgrade-source.sh /opt/netlooker/s
 5. 停止五个应用服务，数据库保持运行；生成数据库 dump、验证目录清单并计算校验值。
 6. 非交互执行迁移，成功后启动应用；重启 Web 并验证 API、网页健康和 API 版本。
 
-原目录旁的 `backups/upgrade-v1.6.9-*` 保存配置、设备数量、数据库备份和旧镜像标签清单。**里面含密码和密钥，不要发到公开群或上传 GitHub。**
+原目录旁的 `backups/upgrade-v1.6.10-*` 保存配置、设备数量、数据库备份和旧镜像标签清单。**里面含密码和密钥，不要发到公开群或上传 GitHub。**
 
 ## 升级后
 
-使用原网页地址，刷新确认登录页/侧栏显示 v1.6.9，核对原设备数量、历史流量和告警。之后从脚本输出的新目录管理服务：
+使用原网页地址，刷新确认登录页/侧栏显示 v1.6.10，核对原设备数量、历史流量和告警。之后从脚本输出的新目录管理服务：
 
 ```bash
 cd /脚本输出的新目录
@@ -49,4 +49,4 @@ docker compose -f docker-compose.yml logs --tail 100 api-gateway collector-go
 
 构建失败时不会停止原应用。停止应用之后若备份、迁移或验证失败，脚本保留现场并报告失败阶段，不自动恢复数据库；请携带报错排查，不能直接删除数据卷重新安装。不要执行 `down -v`、seed 初始化或 `pg_resetwal`。本脚本仅支持标准服务名、单个 PostgreSQL 命名数据卷与默认 snmp/snmp_monitor 数据库；其他部署需要适配。
 
-此脚本随 v1.6.9 发布；使用前请先备份数据库与配置，并阅读本说明中的适用范围和限制。
+此脚本随 v1.6.10 发布；使用前请先备份数据库与配置，并阅读本说明中的适用范围和限制。

@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 
-VERSION="${2:-v1.6.9}"
+VERSION="${2:-v1.6.10}"
 PG_CONTAINER="${PG_CONTAINER:-snmp-monitor-postgres}"
 WAIT_SECONDS="${WAIT_SECONDS:-600}"
 phase='preflight'

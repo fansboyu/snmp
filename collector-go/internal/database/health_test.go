@@ -41,7 +41,7 @@ func TestHealthConfirmationAndRecovery(t *testing.T) {
 	}
 	save := func(o collector.HealthObservation) {
 		t.Helper()
-		if err := store.SaveHealthObservation(ctx, id, o, activity, updated); err != nil {
+		if _, err := store.SaveHealthObservation(ctx, id, o, activity, updated); err != nil {
 			t.Fatal(err)
 		}
 	}

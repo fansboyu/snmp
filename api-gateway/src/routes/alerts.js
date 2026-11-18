@@ -136,7 +136,8 @@ export async function alertRoutes(app) {
           e.value_text,
           e.triggered_at,
           e.last_seen_at,
-          e.resolved_at
+          e.resolved_at,
+          e.resolution_source
         from alert_events e
         left join alert_rules r on r.id = e.rule_id
         left join devices d on d.id = e.device_id
@@ -367,7 +368,8 @@ export async function alertRoutes(app) {
         update alert_events
         set status = 'resolved',
           resolved_at = coalesce(resolved_at, now()),
-          last_seen_at = now()
+          last_seen_at = now(),
+          resolution_source = 'manual'
         where id = $1 and status = 'active'
         returning *
       `,

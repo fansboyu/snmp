@@ -23,6 +23,7 @@ import {
   setTopologyLink,
   bindTopologyNeighbor,
   requestTopologyScan,
+  getTopologyNodeEndpoints,
   setTopologyRoot,
   setTopologyLifecycle,
   type TopologyData,
@@ -31,6 +32,7 @@ import {
   type TopologyDetail,
   type TopologyFlow,
   type TopologyChange,
+  type TopologyNodeEndpoints,
   type DeviceNeighbor,
 } from '../services/api'
 
@@ -196,6 +198,9 @@ const flows = ref<Record<string, TopologyFlow>>({}),
 const detail = ref<TopologyDetail | null>(null),
   detailLoading = ref(false),
   range = ref('1h')
+const nodeEndpoints = ref<TopologyNodeEndpoints | null>(null)
+const nodeEndpointsLoading = ref(false)
+const nodeEndpointsError = ref('')
 const history = ref<TopologyChange[]>([]),
   historyVisible = ref(false)
 const discoveryVisible = ref(false)
@@ -216,7 +221,7 @@ async function scanDevice(id: string) {
   scanSubmitting.value = id
   try {
     await requestTopologyScan(id)
-    ElMessage.success('已提交邻居采集，将由采集器按设备串行执行')
+    ElMessage.success('已提交拓扑与终端数据采集，将由采集器按设备串行执行')
     await load()
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '提交失败')
@@ -248,8 +253,9 @@ let graph: Graph | null = null,
   rendering = false,
   disposed = false,
   loadSequence = 0,
-  detailSequence = 0
-let detailAbort: AbortController | undefined, flowAbort: AbortController | undefined
+  detailSequence = 0,
+  endpointSequence = 0
+let detailAbort: AbortController | undefined, flowAbort: AbortController | undefined, endpointAbort: AbortController | undefined
 let timer: ReturnType<typeof setInterval> | undefined
 const statusNames: Record<string, string> = {
   online: '在线',
@@ -271,6 +277,14 @@ const scanNames: Record<string, string> = {
   partial: '部分成功',
   failed: '失败',
   unsupported: '不支持或不可见',
+}
+const endpointStatusNames: Record<string, string> = {
+  fresh: '数据新鲜',
+  empty: '当前无 MAC 记录',
+  stale: '数据过期',
+  failed: '采集失败',
+  unsupported: '设备不支持',
+  not_collected: '尚未采集',
 }
 const layerNames: Record<string, string> = {
   core: '核心',
@@ -392,11 +406,63 @@ async function load(force = false) {
     render()
     await refreshTraffic()
     if (selectedLink.value) await loadDetail()
+    if (selectedNode.value?.device_id) await loadNodeEndpoints()
   } catch (error) {
     if (!disposed) ElMessage.error(error instanceof Error ? error.message : '加载拓扑失败')
   } finally {
     if (sequence === loadSequence) loading.value = false
   }
+}
+
+async function loadNodeEndpoints() {
+  const node = selectedNode.value
+  if (!node?.device_id) {
+    nodeEndpoints.value = null
+    nodeEndpointsError.value = ''
+    return
+  }
+  const sequence = ++endpointSequence
+  endpointAbort?.abort()
+  const controller = new AbortController()
+  endpointAbort = controller
+  nodeEndpointsLoading.value = true
+  nodeEndpointsError.value = ''
+  try {
+    const result = await getTopologyNodeEndpoints(String(node.id), controller.signal)
+    if (!disposed && sequence === endpointSequence) nodeEndpoints.value = result
+  } catch (error) {
+    if (!controller.signal.aborted && !disposed && sequence === endpointSequence) {
+      nodeEndpoints.value = null
+      nodeEndpointsError.value = error instanceof Error ? error.message : '终端信息加载失败'
+    }
+  } finally {
+    if (sequence === endpointSequence) nodeEndpointsLoading.value = false
+  }
+}
+
+async function scanSelectedNode() {
+  if (!selectedNode.value?.device_id) return
+  await scanDevice(String(selectedNode.value.device_id))
+}
+
+function endpointBadge(node: TopologyNode): string {
+  if (!node.device_id) return ''
+  const summary = node.endpoint_summary
+  if (summary?.data_status === 'fresh' || summary?.data_status === 'empty')
+    return `终端 ~${summary.terminal_count}`
+  return `终端 ${endpointStatusNames[summary?.data_status || 'not_collected'] || '未知'}`
+}
+
+function endpointKindName(kind: string): string {
+  if (kind === 'network_link') return '已识别网络链路'
+  if (kind === 'shared_port') return '疑似共享口'
+  return '终端估算'
+}
+
+function endpointIpMatchName(state: string): string {
+  if (state === 'unique_candidate') return '单一候选'
+  if (state === 'ambiguous') return '存在歧义'
+  return '仅 MAC'
 }
 function rate(link: TopologyLink): { in: number | null; out: number | null; hint: string } {
   if (link.lifecycle === 'history') return { in: null, out: null, hint: '历史连接，不显示当前速率' }
@@ -460,6 +526,8 @@ function render() {
           { tagName: 'rect', selector: 'body' },
           { tagName: 'image', selector: 'icon' },
           { tagName: 'circle', selector: 'state' },
+          { tagName: 'rect', selector: 'endpointBadge' },
+          { tagName: 'text', selector: 'endpointCount' },
           { tagName: 'text', selector: 'name' },
           { tagName: 'text', selector: 'model' },
           { tagName: 'text', selector: 'meta' },
@@ -511,6 +579,26 @@ function render() {
         height: 46,
       },
       state: { cx: width - 14, cy: 14, r: 4.5, fill: color(n.device_status) },
+      endpointBadge: {
+        x: width - 79,
+        y: 48,
+        width: 72,
+        height: 19,
+        rx: 9,
+        ry: 9,
+        fill: '#eff6ff',
+        stroke: '#bfdbfe',
+        display: n.device_id ? '' : 'none',
+      },
+      endpointCount: {
+        text: zoomLevel.value < 0.65 ? '' : endpointBadge(n),
+        x: width - 43,
+        y: 61,
+        textAnchor: 'middle',
+        fill: '#1d4ed8',
+        fontSize: 9,
+        fontWeight: 600,
+      },
       name: {
         text: `${n.position_locked ? '🔒 ' : ''}${n.label}${folded.value.has(String(n.id)) ? ' [+]' : ''}`,
         x: width / 2,
@@ -782,6 +870,10 @@ function select(kind: string, id: string) {
   selectedId.value = id
   detail.value = null
   if (kind === 'node') {
+    detailAbort?.abort()
+    endpointAbort?.abort()
+    nodeEndpoints.value = null
+    nodeEndpointsError.value = ''
     const n = selectedNode.value
     if (n)
       Object.assign(nodeForm, {
@@ -792,7 +884,10 @@ function select(kind: string, id: string) {
         asset_vendor: n.asset_vendor || '',
         asset_model: n.asset_model || '',
       })
+    void loadNodeEndpoints()
   } else {
+    endpointAbort?.abort()
+    nodeEndpoints.value = null
     const l = selectedLink.value
     if (l) {
       Object.assign(bindingForm, {
@@ -1049,6 +1144,8 @@ onMounted(async () => {
     selectedId.value = ''
     selectedKind.value = ''
     detailAbort?.abort()
+    endpointAbort?.abort()
+    nodeEndpoints.value = null
     render()
   })
   graph.on('node:change:position', () => {
@@ -1107,6 +1204,7 @@ onBeforeUnmount(() => {
   detailSequence++
   clearInterval(timer)
   detailAbort?.abort()
+  endpointAbort?.abort()
   flowAbort?.abort()
   graph?.dispose()
   graph = null
@@ -1323,6 +1421,84 @@ watch(maximized, async () => {
             }}
             个
           </p>
+          <el-divider v-if="selectedNode.device_id" content-position="left">下联终端</el-divider>
+          <div v-if="selectedNode.device_id" v-loading="nodeEndpointsLoading" class="topology-endpoints">
+            <el-alert
+              v-if="nodeEndpointsError"
+              type="error"
+              :closable="false"
+              :title="nodeEndpointsError"
+            />
+            <template v-else>
+              <div class="topology-endpoint-summary">
+                <div>
+                  <strong>
+                    {{ nodeEndpoints?.summary.terminal_count ?? selectedNode.endpoint_summary?.terminal_count ?? 0 }}
+                  </strong>
+                  <span>终端估算</span>
+                </div>
+                <div>
+                  <strong>{{ nodeEndpoints?.summary.ip_count ?? selectedNode.endpoint_summary?.ip_count ?? 0 }}</strong>
+                  <span>有 IP 候选</span>
+                </div>
+                <el-tag size="small" :type="nodeEndpoints?.summary.data_status === 'fresh' ? 'success' : 'info'">
+                  {{ endpointStatusNames[nodeEndpoints?.summary.data_status || selectedNode.endpoint_summary?.data_status || 'not_collected'] }}
+                </el-tag>
+              </div>
+              <p class="topology-endpoint-meta">
+                共学习到 {{ nodeEndpoints?.summary.mac_count ?? selectedNode.endpoint_summary?.mac_count ?? 0 }} 个 MAC；
+                {{ nodeEndpoints?.summary.known_uplink_mac_count ?? selectedNode.endpoint_summary?.known_uplink_mac_count ?? 0 }} 个位于已识别网络设备链路，
+                {{ nodeEndpoints?.summary.shared_port_mac_count ?? selectedNode.endpoint_summary?.shared_port_mac_count ?? 0 }} 个位于疑似共享端口。
+                更新时间：{{ localTime(nodeEndpoints?.summary.observed_at || selectedNode.endpoint_summary?.observed_at || '') }}
+              </p>
+              <el-button
+                v-if="!editing && selectedNode.device_id"
+                size="small"
+                :loading="scanSubmitting === String(selectedNode.device_id)"
+                @click="scanSelectedNode"
+              >立即采集 FDB / ARP</el-button>
+              <el-table
+                v-if="nodeEndpoints?.items.length"
+                :data="nodeEndpoints.items"
+                row-key="row_key"
+                size="small"
+                max-height="260"
+                class="topology-endpoint-table"
+              >
+                <el-table-column label="MAC / VLAN" min-width="145">
+                  <template #default="{ row }">
+                    <span>{{ row.mac_address }}</span>
+                    <small class="topology-endpoint-sub">VLAN {{ row.vlan_id ?? '未知' }}</small>
+                  </template>
+                </el-table-column>
+                <el-table-column label="IP 候选" min-width="130">
+                  <template #default="{ row }">
+                    <span>{{ row.ip_address || '未识别' }}</span>
+                    <small v-if="row.ip_address" class="topology-endpoint-sub">{{ endpointIpMatchName(row.ip_match_state) }} · {{ row.ip_source_device_name || 'ARP 来源未知' }}</small>
+                  </template>
+                </el-table-column>
+                <el-table-column label="端口" min-width="120">
+                  <template #default="{ row }">
+                    <span>{{ row.interface_name }}</span>
+                    <small v-if="row.interface_alias" class="topology-endpoint-sub">{{ row.interface_alias }}</small>
+                  </template>
+                </el-table-column>
+                <el-table-column label="分类" min-width="125">
+                  <template #default="{ row }">
+                    <el-tooltip v-if="row.exclusion_reason" :content="row.exclusion_reason" placement="top">
+                      <el-tag size="small" type="warning">{{ endpointKindName(row.endpoint_kind) }}</el-tag>
+                    </el-tooltip>
+                    <el-tag v-else size="small" type="success">{{ endpointKindName(row.endpoint_kind) }}</el-tag>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <el-empty v-else-if="nodeEndpoints?.summary.data_status === 'empty'" :image-size="56" description="最近一次 FDB 采集没有 MAC 记录" />
+              <p v-else-if="!nodeEndpoints" class="topology-endpoint-meta">{{ endpointStatusNames[selectedNode.endpoint_summary?.data_status || 'not_collected'] }}；选择“立即采集”读取设备 MAC 表。</p>
+              <p class="topology-endpoint-note">
+                数量按当前新鲜 FDB 学到的唯一 MAC 估算；已确认的 LLDP/CDP 链路和单端口学习到 20 个以上 MAC 的共享口不计入终端估算。AP、下级交换机、虚拟化和未发现的网络设备仍可能影响数量。IP 来自 ARP 关联，可能缺失或有歧义。
+              </p>
+            </template>
+          </div>
           <el-checkbox v-model="highlightPath">高亮到根节点的展示路径</el-checkbox>
           <p>展示路径用于阅读层级，不代表实际转发或路由路径；其他上联仍保留。</p>
           <el-button
@@ -1765,6 +1941,50 @@ watch(maximized, async () => {
 .topology-sidebar h3 {
   margin: 0;
   font-size: 16px;
+}
+.topology-endpoints {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.topology-endpoint-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.topology-endpoint-summary > div {
+  display: grid;
+  gap: 2px;
+  min-width: 68px;
+}
+.topology-endpoint-summary strong {
+  color: #0f766e;
+  font-size: 18px;
+  line-height: 1.1;
+}
+.topology-endpoint-summary span {
+  color: #64748b;
+  font-size: 11px;
+}
+.topology-endpoint-meta,
+.topology-endpoint-note {
+  font-size: 11px !important;
+}
+.topology-endpoint-note {
+  padding: 7px 8px;
+  background: #f8fafc;
+  border-left: 3px solid #93c5fd;
+}
+.topology-endpoint-table {
+  width: 100%;
+  font-size: 11px;
+}
+.topology-endpoint-sub {
+  display: block;
+  color: #94a3b8;
+  font-size: 10px;
+  line-height: 1.4;
 }
 .topology-sidebar .el-select,
 .topology-sidebar .el-input {

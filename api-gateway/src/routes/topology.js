@@ -1,4 +1,5 @@
 import { readTopologyMonitor, topologyInventory, syncTopologyMonitor } from '../topology-service.js'
+import { readTopologyNodeEndpoints } from '../topology-endpoints.js'
 import { topologyMonitorRoutes } from './topology-monitor.js'
 function isId(value) {
   return /^\d+$/.test(String(value ?? ''))
@@ -52,6 +53,14 @@ export async function topologyRoutes(app) {
   app.get('/default', async () => {
     const map = await getDefaultMap(app)
     return readTopology(app, map.id)
+  })
+
+  app.get('/default/nodes/:nodeId/endpoints', async (request, reply) => {
+    if (!isId(request.params.nodeId)) return reply.code(400).send({ message: '拓扑节点 ID 无效' })
+    const map = await getDefaultMap(app)
+    const result = await readTopologyNodeEndpoints(app.db, map.id, request.params.nodeId)
+    if (!result) return reply.code(404).send({ message: '拓扑节点不存在' })
+    return result
   })
 
   app.get('/neighbors', async (request) => {

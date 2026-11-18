@@ -20,7 +20,7 @@ type HealthObservation struct {
 }
 type HealthStore interface {
 	ListHealthCandidates(context.Context, time.Duration) ([]HealthCandidate, error)
-	SaveHealthObservation(context.Context, int64, HealthObservation, time.Time, time.Time) error
+	SaveHealthObservation(context.Context, int64, HealthObservation, time.Time, time.Time) (string, error)
 }
 
 // A separate bounded pool confirms reachability even during collection backoff.
@@ -55,11 +55,14 @@ func (engine *Engine) runHealthChecks(ctx context.Context, store HealthStore) {
 						return
 					}
 					writeCtx, finish := context.WithTimeout(ctx, engine.DatabaseTimeout)
-					err := store.SaveHealthObservation(writeCtx, candidate.Device.ID, observation, candidate.LastActivity, candidate.ConfigUpdatedAt)
-					finish()
+					status, err := store.SaveHealthObservation(writeCtx, candidate.Device.ID, observation, candidate.LastActivity, candidate.ConfigUpdatedAt)
 					if err != nil {
+						finish()
 						log.Printf("health save device=%d failed: %v", candidate.Device.ID, err)
+						return
 					}
+					engine.applyHealthAlertState(writeCtx, candidate.Device, status, observation.Reason)
+					finish()
 					log.Printf("health probe device=%d snmp_ok=%t ping_ok=%t conclusive=%t", candidate.Device.ID, observation.SNMPOK, observation.PingOK, observation.Conclusive)
 				}(candidate)
 			}

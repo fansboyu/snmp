@@ -323,30 +323,9 @@ func (engine Engine) evaluateAlerts(ctx context.Context, device Device, samples 
 			engine.evaluateCPUAlert(ctx, device, rule, samples)
 		case "interface_down":
 			engine.evaluateInterfaceDownAlert(ctx, device, rule, interfaceSamples)
-		case "device_no_data":
-			engine.evaluateDeviceNoDataAlert(ctx, device, rule, samples, interfaceSamples)
 		}
 	}
 	return nil
-}
-
-func (engine Engine) evaluateDeviceNoDataAlert(ctx context.Context, device Device, rule AlertRule, samples []MetricSample, interfaceSamples []InterfaceMetricSample) {
-	title := "Device no data"
-	if len(samples) == 0 && len(interfaceSamples) == 0 {
-		now := time.Now().UTC()
-		engine.upsertAlertEvent(ctx, AlertEvent{
-			RuleID:     rule.ID,
-			DeviceID:   device.ID,
-			Severity:   severity(rule.Severity),
-			Title:      title,
-			Message:    fmt.Sprintf("%s has no SNMP samples in this collection cycle", device.Name),
-			Value:      "no_data",
-			CreatedAt:  now,
-			DeviceName: device.Name,
-		})
-		return
-	}
-	engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, title)
 }
 
 func (engine Engine) evaluateCPUAlert(ctx context.Context, device Device, rule AlertRule, samples []MetricSample) {
@@ -361,7 +340,7 @@ func (engine Engine) evaluateCPUAlert(ctx context.Context, device Device, rule A
 		if err != nil {
 			continue
 		}
-		triggered := compare(value, rule.Operator, rule.Threshold)
+		triggered := engine.conditionConfirmed(ctx, rule, device.ID, 0, compare(value, rule.Operator, rule.Threshold))
 		title := "CPU 使用率超过阈值"
 		if triggered {
 			engine.upsertAlertEvent(ctx, AlertEvent{
@@ -381,6 +360,12 @@ func (engine Engine) evaluateCPUAlert(ctx context.Context, device Device, rule A
 }
 
 func (engine Engine) evaluateInterfaceDownAlert(ctx context.Context, device Device, rule AlertRule, samples []InterfaceMetricSample) {
+	adminStatus := make(map[int64]string)
+	for _, sample := range samples {
+		if sample.MetricName == "ifAdminStatus" {
+			adminStatus[sample.InterfaceID] = strings.TrimSpace(sample.Value)
+		}
+	}
 	for _, sample := range samples {
 		if sample.MetricName != "ifOperStatus" {
 			continue
@@ -389,7 +374,15 @@ func (engine Engine) evaluateInterfaceDownAlert(ctx context.Context, device Devi
 			continue
 		}
 		title := "接口状态 Down"
-		if strings.TrimSpace(sample.Value) == "2" || strings.EqualFold(sample.Value, "down") {
+		admin, known := adminStatus[sample.InterfaceID]
+		if !known {
+			continue
+		}
+		// A down operational state is actionable only when the interface is
+		// administratively enabled. Unknown admin state is not enough evidence.
+		adminUp := admin == "1" || strings.EqualFold(admin, "up")
+		triggered := engine.conditionConfirmed(ctx, rule, device.ID, sample.InterfaceID, adminUp && (strings.TrimSpace(sample.Value) == "2" || strings.EqualFold(sample.Value, "down")))
+		if triggered {
 			engine.upsertAlertEvent(ctx, AlertEvent{
 				RuleID:      rule.ID,
 				DeviceID:    device.ID,
@@ -405,6 +398,27 @@ func (engine Engine) evaluateInterfaceDownAlert(ctx context.Context, device Devi
 		}
 		engine.resolveAlertEvent(ctx, rule.ID, device.ID, sample.InterfaceID, title)
 	}
+}
+
+type alertConditionStore interface {
+	ConfirmAlertCondition(context.Context, int64, int64, int64, bool, time.Duration, time.Duration) (bool, error)
+}
+
+func (engine Engine) conditionConfirmed(ctx context.Context, rule AlertRule, deviceID, interfaceID int64, condition bool) bool {
+	store, ok := engine.Store.(alertConditionStore)
+	if !ok {
+		return condition
+	}
+	maxGap := engine.Interval * 3
+	if maxGap <= 0 {
+		maxGap = 3 * time.Minute
+	}
+	confirmed, err := store.ConfirmAlertCondition(ctx, rule.ID, deviceID, interfaceID, condition, time.Duration(rule.DurationSeconds)*time.Second, maxGap)
+	if err != nil {
+		log.Printf("confirm alert condition rule=%d device=%d failed: %v", rule.ID, deviceID, err)
+		return false
+	}
+	return confirmed
 }
 
 func (engine Engine) upsertAlertEvent(ctx context.Context, event AlertEvent) {
@@ -428,6 +442,69 @@ func (engine Engine) resolveAlertEvent(ctx context.Context, ruleID int64, device
 	if event != nil {
 		engine.queueAlertNotifications(ctx, *event, "resolved")
 	}
+}
+
+func (engine Engine) applyHealthAlertState(ctx context.Context, device Device, status, reason string) {
+	rules, err := engine.Store.ListAlertRules(ctx)
+	if err != nil {
+		log.Printf("list health alert rules failed: %v", err)
+		return
+	}
+	const offlineTitle = "设备确认离线"
+	const collectionTitle = "设备采集异常"
+	for _, rule := range rules {
+		if rule.DeviceID > 0 && rule.DeviceID != device.ID {
+			continue
+		}
+		switch rule.RuleType {
+		case "device_offline":
+			if status == "offline" {
+				engine.upsertAlertEvent(ctx, AlertEvent{RuleID: rule.ID, DeviceID: device.ID, Severity: severity(rule.Severity), Title: offlineTitle, Message: fmt.Sprintf("%s 连续探测失败，已确认不可达。%s", device.Name, reason), Value: status, CreatedAt: time.Now().UTC(), DeviceName: device.Name})
+			} else if status == "collection_error" {
+				engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, offlineTitle)
+			}
+		case "collection_error":
+			if status == "collection_error" {
+				engine.upsertAlertEvent(ctx, AlertEvent{RuleID: rule.ID, DeviceID: device.ID, Severity: severity(rule.Severity), Title: collectionTitle, Message: fmt.Sprintf("%s 的采集数据已超过 6 分钟未更新，但 SNMP 或 Ping 探测仍可达。%s", device.Name, reason), Value: status, CreatedAt: time.Now().UTC(), DeviceName: device.Name})
+			} else if status == "offline" {
+				engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, collectionTitle)
+			}
+		}
+	}
+}
+
+func (engine Engine) resolveHealthIncidents(ctx context.Context, device Device) {
+	if store, ok := engine.Store.(interface {
+		ResetDeviceHealth(context.Context, int64) error
+	}); ok {
+		if err := store.ResetDeviceHealth(ctx, device.ID); err != nil {
+			log.Printf("reset health state device=%d failed: %v", device.ID, err)
+		}
+	}
+	for _, ruleType := range []string{"device_offline", "collection_error"} {
+		title := "设备确认离线"
+		if ruleType == "collection_error" {
+			title = "设备采集异常"
+		}
+		for _, rule := range engine.enabledRules(ctx, ruleType, device.ID) {
+			engine.resolveAlertEvent(ctx, rule.ID, device.ID, 0, title)
+		}
+	}
+}
+
+func (engine Engine) enabledRules(ctx context.Context, ruleType string, deviceID int64) []AlertRule {
+	rules, err := engine.Store.ListAlertRules(ctx)
+	if err != nil {
+		log.Printf("list alert rules failed: %v", err)
+		return nil
+	}
+	filtered := make([]AlertRule, 0)
+	for _, rule := range rules {
+		if rule.RuleType == ruleType && (rule.DeviceID == 0 || rule.DeviceID == deviceID) {
+			filtered = append(filtered, rule)
+		}
+	}
+	return filtered
 }
 
 func (engine Engine) queueAlertNotifications(ctx context.Context, event AlertEvent, action string) {

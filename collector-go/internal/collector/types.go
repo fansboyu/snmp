@@ -89,16 +89,17 @@ type NeighborInfo struct {
 }
 
 type AlertRule struct {
-	ID          int64
-	Name        string
-	RuleType    string
-	Severity    string
-	DeviceID    int64
-	InterfaceID int64
-	MetricName  string
-	Operator    string
-	Threshold   float64
-	Enabled     bool
+	ID              int64
+	Name            string
+	RuleType        string
+	Severity        string
+	DeviceID        int64
+	InterfaceID     int64
+	MetricName      string
+	Operator        string
+	Threshold       float64
+	DurationSeconds int
+	Enabled         bool
 }
 
 type AlertEvent struct {

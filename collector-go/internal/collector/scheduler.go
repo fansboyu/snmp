@@ -392,6 +392,9 @@ func (engine *Engine) runCollectionJob(job collectionJob) bool {
 	if err := engine.evaluateAlerts(job.ctx, job.device, samples, interfaces); err != nil {
 		log.Printf("evaluate alerts device=%d failed: %v", job.device.ID, err)
 	}
+	if networkComplete && success {
+		engine.resolveHealthIncidents(job.ctx, job.device)
+	}
 	if job.ctx.Err() != nil {
 		success = false
 	}

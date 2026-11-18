@@ -6,6 +6,7 @@ import {
 } from './topology-model.js'
 import { discoveryDiagnostics } from './topology-discovery.js'
 import { topologyForest } from './topology-layout.js'
+import { readTopologyEndpointSummary, emptyEndpointSummary, chooseFdbScan, endpointDataStatus } from './topology-endpoints.js'
 
 export async function topologyInventory(db) {
   const tasks = [
@@ -64,14 +65,26 @@ export async function topologyInventory(db) {
 }
 
 export async function readTopologyMonitor(db, mapId) {
-  const [inventory, map, nodes, links] = await Promise.all([
+  const [inventory, map, nodes, links, endpointRows] = await Promise.all([
     topologyInventory(db),
     db.query('select * from topology_maps where id=$1', [mapId]),
     db.query('select * from topology_nodes where map_id=$1 order by id', [mapId]),
     db.query('select * from topology_links where map_id=$1 order by id', [mapId]),
+    readTopologyEndpointSummary(db),
   ])
+  const endpointByDevice = new Map(endpointRows.map((row) => [String(row.device_id), row]))
   const enrichedNodes = nodes.rows.map((n) => {
     const device = inventory.devices.find((d) => String(d.id) === String(n.device_id))
+    const observedEndpoints = endpointByDevice.get(String(n.device_id))
+    const fdbScan = chooseFdbScan(inventory.scans.filter((scan) => String(scan.device_id) === String(n.device_id)))
+    const endpointSummary = observedEndpoints
+      ? {
+          ...observedEndpoints,
+          data_status: endpointDataStatus(fdbScan, Number(observedEndpoints.mac_count) > 0),
+          checked_at: fdbScan?.checked_at || null,
+          fdb_protocol: fdbScan?.protocol || null,
+        }
+      : emptyEndpointSummary(device ? endpointDataStatus(fdbScan, false) : 'not_collected')
     return {
       ...n,
       device_name: device?.name,
@@ -81,6 +94,7 @@ export async function readTopologyMonitor(db, mapId) {
       device_status: device?.online_status ?? 'unknown',
       last_sample_at: device?.last_seen_at,
       probe_reason: device?.probe_reason,
+      endpoint_summary: endpointSummary,
       display_kind:
         n.asset_kind === 'auto'
           ? n.node_type === 'network'

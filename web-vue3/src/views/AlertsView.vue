@@ -44,6 +44,7 @@ const ruleForm = reactive({
   metric_name: 'cpuUsage',
   operator: '>',
   threshold: 80,
+  duration_seconds: 60,
   enabled: true
 })
 
@@ -90,7 +91,7 @@ async function resolveEvent(event: AlertEvent): Promise<void> {
   resolvingId.value = event.id
   try {
     await resolveAlertEvent(event.id)
-    ElMessage.success('告警已恢复')
+    ElMessage.success('事件已手动关闭；如果条件仍成立，后续采集会再次触发')
     await loadData()
   } finally {
     resolvingId.value = ''
@@ -159,7 +160,9 @@ function ruleTypeName(type: string): string {
   const names: Record<string, string> = {
     cpu_threshold: 'CPU 阈值',
     interface_down: '接口 Down',
-    device_no_data: '设备无数据'
+    device_no_data: '旧版采集无数据（已停用）',
+    device_offline: '设备确认离线',
+    collection_error: '设备采集异常'
   }
   return names[type] || type
 }
@@ -208,7 +211,7 @@ onMounted(loadData)
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="statusType(row.status)">{{ row.status === 'active' ? '告警中' : '已恢复' }}</el-tag>
+            <el-tag :type="statusType(row.status)">{{ row.status === 'active' ? '告警中' : row.resolution_source === 'manual' ? '手动关闭' : '已恢复' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column prop="title" label="标题" min-width="160" />
@@ -227,7 +230,7 @@ onMounted(loadData)
               :loading="resolvingId === row.id"
               @click="resolveEvent(row)"
             >
-              标记恢复
+              手动关闭
             </el-button>
             <span v-else>-</span>
           </template>
@@ -302,7 +305,6 @@ onMounted(loadData)
               <el-select v-model="ruleForm.rule_type">
                 <el-option label="CPU 阈值" value="cpu_threshold" />
                 <el-option label="接口 Down" value="interface_down" />
-                <el-option label="设备无数据" value="device_no_data" />
               </el-select>
             </el-form-item>
             <el-form-item label="级别">
@@ -326,6 +328,10 @@ onMounted(loadData)
                 <el-input-number v-model="ruleForm.threshold" :min="0" :max="1000000" />
               </div>
             </el-form-item>
+            <el-form-item label="持续时间">
+              <el-input-number v-model="ruleForm.duration_seconds" :min="0" :max="86400" />
+              <span class="form-hint">秒；设为 0 表示立即触发</span>
+            </el-form-item>
             <el-form-item label="启用">
               <el-switch v-model="ruleForm.enabled" />
             </el-form-item>
@@ -347,6 +353,9 @@ onMounted(loadData)
             <el-table-column prop="severity" label="级别" width="100" />
             <el-table-column label="条件" min-width="140">
               <template #default="{ row }">{{ row.metric_name || '-' }} {{ row.operator || '' }} {{ row.threshold || '' }}</template>
+            </el-table-column>
+            <el-table-column label="持续" width="100">
+              <template #default="{ row }">{{ row.duration_seconds || 0 }} 秒</template>
             </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">

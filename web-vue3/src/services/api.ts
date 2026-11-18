@@ -266,6 +266,7 @@ export interface AlertEvent {
   triggered_at: string
   last_seen_at: string
   resolved_at?: string | null
+  resolution_source?: string
 }
 
 export interface AlertNotification {
@@ -386,6 +387,7 @@ export interface TopologyNode {
   display_kind?:string
   asset_source?:string
   interface_summary?:{total:number;up:number;down:number;fresh:boolean}
+  endpoint_summary?:TopologyEndpointSummary
   position_locked?: boolean
   layer?: 'core' | 'aggregation' | 'access' | 'external'
   identity_key?: string | null
@@ -407,6 +409,44 @@ export interface TopologyNode {
   height: string | number
   created_at?: string
   updated_at?: string
+}
+
+export interface TopologyEndpointSummary {
+  data_status: 'fresh'|'empty'|'stale'|'failed'|'unsupported'|'not_collected'
+  mac_count: number
+  terminal_count: number
+  ip_count: number
+  known_uplink_mac_count: number
+  shared_port_mac_count: number
+  observed_at: string | null
+  checked_at: string | null
+  fdb_protocol: string | null
+}
+
+export interface TopologyEndpointItem {
+  row_key: string
+  vlan_id: number | null
+  mac_address: string
+  if_index: number
+  interface_name: string
+  interface_alias: string | null
+  ip_address: string | null
+  ip_vlan_id: number | null
+  ip_source_device_id: string | null
+  ip_source_device_name: string | null
+  ip_seen_at: string | null
+  endpoint_kind: 'terminal_estimate'|'network_link'|'shared_port'
+  exclusion_reason: string
+  ip_match_state: 'mac_only'|'unique_candidate'|'ambiguous'
+  observed_at: string
+}
+
+export interface TopologyNodeEndpoints {
+  device_id: string | null
+  device_name: string | null
+  summary: TopologyEndpointSummary
+  items: TopologyEndpointItem[]
+  scans: Array<{protocol:string;status:string;reason:string;checked_at:string;last_success_at?:string|null}>
 }
 
 export interface TopologyLink {
@@ -789,6 +829,10 @@ export async function createTopologyNode(payload: Partial<TopologyNode>): Promis
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   })
+}
+
+export async function getTopologyNodeEndpoints(nodeId: string, signal?: AbortSignal): Promise<TopologyNodeEndpoints> {
+  return request(`/api/topology/default/nodes/${nodeId}/endpoints`, { signal })
 }
 
 export async function updateTopologyNode(id: string, payload: Partial<TopologyNode>): Promise<TopologyNode> {

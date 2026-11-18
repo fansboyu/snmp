@@ -1102,6 +1102,7 @@ func (store *PostgresStore) ListAlertRules(ctx context.Context) ([]collector.Ale
 			coalesce(metric_name, ''),
 			coalesce(operator, ''),
 			coalesce(threshold, 0),
+			duration_seconds,
 			enabled
 		from alert_rules
 		where enabled = true
@@ -1125,6 +1126,7 @@ func (store *PostgresStore) ListAlertRules(ctx context.Context) ([]collector.Ale
 			&rule.MetricName,
 			&rule.Operator,
 			&rule.Threshold,
+			&rule.DurationSeconds,
 			&rule.Enabled,
 		); err != nil {
 			return nil, err

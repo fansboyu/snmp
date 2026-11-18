@@ -55,23 +55,25 @@ test(
       const addPort = async (device, index) =>
         (
           await query(
-            `insert into device_interfaces(device_id,if_index,if_name,oper_status,admin_status,speed_bps,last_seen_at)
-    values($1,$2,$3,'1','1',1000000000,now()) returning *`,
-            [device.id, index, 'GE1/0/' + index],
+            `insert into device_interfaces(device_id,if_index,if_name,if_alias,oper_status,admin_status,speed_bps,last_seen_at)
+    values($1,$2,$3,$4,'1','1',1000000000,now()) returning *`,
+            [device.id, index, 'GE1/0/' + index, '演示端口 ' + index],
           )
         ).rows[0]
       const p1 = await addPort(a, 1),
         p2 = await addPort(b, 2),
         p3 = await addPort(a, 3),
-        p4 = await addPort(b, 4)
+        p4 = await addPort(b, 4),
+        p5 = await addPort(a, 9)
       const addNeighbor = async (local, remote, lp, rp, protocol = 'lldp', name) =>
         (
           await query(
-            `insert into device_neighbors(device_id,local_interface_id,local_port_id,remote_port_id,remote_device_name,remote_mgmt_address,protocol,fingerprint)
-    values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+            `insert into device_neighbors(device_id,local_interface_id,local_if_index,local_port_id,remote_port_id,remote_device_name,remote_mgmt_address,protocol,fingerprint)
+    values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
             [
               local.id,
               lp.id,
+              lp.if_index,
               lp.if_name,
               rp.if_name,
               name || remote.name,
@@ -84,6 +86,17 @@ test(
       await addNeighbor(a, b, p1, p2)
       await addNeighbor(b, a, p2, p1)
       await addNeighbor(a, b, p1, p2, 'cdp')
+      await query(`insert into switch_mac_observations(device_id,vlan_id,mac_address,if_index,active,observed_at)
+        values($1,10,'02:00:00:00:01:01',1,true,now()),
+              ($1,10,'02:00:00:00:01:02',9,true,now()),
+              ($1,10,'02:00:00:00:01:03',9,true,now())`, [a.id])
+      for (let i = 1; i <= 20; i++) {
+        const mac = `02:00:00:00:02:${String(i).padStart(2, '0')}`
+        await query(`insert into switch_mac_observations(device_id,vlan_id,mac_address,if_index,active,observed_at)
+          values($1,10,$2,10,true,now())`, [a.id, mac])
+      }
+      await query(`insert into ip_mac_observations(device_id,vlan_id,if_index,ip_address,mac_address,active,observed_at)
+        values($1,10,7,'192.0.2.250','02:00:00:00:01:02',true,now())`, [b.id])
       let synced = await syncTopologyMonitor(app, map.id)
       let ownLinks = synced.topology.links.filter((l) => l.evidence_ids?.length)
       assert.equal(ownLinks.length, 1, 'LLDP/CDP and both directions deduplicate')
@@ -91,6 +104,17 @@ test(
       assert.equal(first.evidence_count, 3)
       assert.equal(first.confirmation, 'bidirectional')
       assert.equal(first.status, 'up')
+      const aNode = synced.topology.nodes.find((node) => String(node.device_id) === String(a.id))
+      assert.equal(aNode.endpoint_summary.terminal_count, 2)
+      assert.equal(aNode.endpoint_summary.ip_count, 1)
+      assert.equal(aNode.endpoint_summary.known_uplink_mac_count, 1)
+      assert.equal(aNode.endpoint_summary.shared_port_mac_count, 20)
+      const endpointDetail = await call('GET', `/default/nodes/${aNode.id}/endpoints`)
+      assert.equal(endpointDetail.summary.terminal_count, 2)
+      assert.equal(endpointDetail.summary.ip_count, 1)
+      assert.equal(endpointDetail.items.find((item) => item.mac_address === '02:00:00:00:01:02').interface_alias, '演示端口 9')
+      assert.equal(endpointDetail.items.find((item) => item.mac_address === '02:00:00:00:01:01').endpoint_kind, 'network_link')
+      assert.equal(endpointDetail.items.find((item) => item.mac_address === '02:00:00:00:01:02').ip_address, '192.0.2.250')
       await syncTopologyMonitor(app, map.id)
       assert.equal((await readTopologyMonitor(pool, map.id)).links.length, 1)
       await addNeighbor(a, b, p3, p4)

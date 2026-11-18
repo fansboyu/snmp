@@ -1,6 +1,6 @@
 # SNMP Monitoring Platform
 
-当前发布版本：**v1.6.9**。新增基于 SSH 的网络设备配置备份、加密版本历史、脱敏差异和审计下载，并预留 NETCONF 适配接口。完整变更与升级说明见 [v1.6.9 发布说明](docs/releases/v1.6.9.md)。
+当前发布版本：**v1.6.10**。拓扑节点显示基于 FDB/ARP 的下联终端估算和 MAC/IP 明细；告警增加持续条件确认，并区分设备确认离线与采集异常。完整变更见 [v1.6.10 发布说明](docs/releases/v1.6.10.md)。
 
 Syslog 由独立 UDP 收集容器接收设备日志，保存到 PostgreSQL，并通过系统日志页面搜索和查看详情。协议范围、部署配置、数据保留与丢包边界见 [Syslog 说明](docs/syslog.md)。
 
@@ -10,7 +10,7 @@ Syslog 由独立 UDP 收集容器接收设备日志，保存到 PostgreSQL，并
 
 这是一个基于 Docker 编排的 SNMP 网络设备监控平台骨架，包含 Go SNMP 采集器、Fastify API 网关、Vue 3 管理前端和 PostgreSQL 数据库。
 
-已有 Linux/WSL 源码部署可使用 [在线升级脚本](deploy/upgrade-source.sh) 下载 GitHub v1.6.9 并升级，保留原项目、数据卷和配置；执行方法及限制见 [升级脚本说明](deploy/upgrade-source-使用说明.md)。
+已有 Linux/WSL 源码部署可使用 [在线升级脚本](deploy/upgrade-source.sh) 下载 GitHub v1.6.10 并升级，保留原项目、数据卷和配置；执行方法及限制见 [升级脚本说明](deploy/upgrade-source-使用说明.md)。
 
 登录页和控制台侧栏底部显示前端版本号，构建时读取 `web-vue3/package.json` 的 `version`。菜单折叠后仍保留版本数字；后续升级修改项目版本并重新构建前端即可同步显示。
 
@@ -109,7 +109,7 @@ docker compose exec -T postgres pg_dump -U snmp -d snmp_monitor -Fc -f /tmp/snmp
 docker cp snmp-monitor-postgres:/tmp/snmp_monitor_backup.dump .\snmp_monitor_backup.dump
 docker compose down
 git fetch --tags
-git checkout v1.6.9
+git checkout v1.6.10
 docker compose up -d --build
 docker compose ps -a
 ```
@@ -1200,7 +1200,7 @@ go run .
 
 设备页每 60 秒在可见且空闲时刷新，选择窗口打开时暂停自动刷新。仅已关注端口加载趋势，最多三个并发请求，切换设备、变更关注列表和离开页面时取消过期趋势请求。数据过期时当前速率显示 `—`，无有效样本显示空状态；采集样本趋势和最新采集数据移入默认折叠的“采集诊断”，展开才加载。三列布局随内容宽度降为两列或单列。
 
-执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.9` 导出运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史离线包保持原样，不能用新数据库镜像覆盖旧版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
+执行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File deploy/build-release.ps1 -ReleaseVersion 1.6.10` 导出运行镜像并生成对应 ZIP。本版使用 PostgreSQL 18；历史离线包保持原样，不能用新数据库镜像覆盖旧版本附件。`-SkipBuild` 仅用于镜像已由当前源码构建的情况。镜像清单、postgresMajor 和 SHA256 位于 VERSION.json，ZIP 外有同名校验文件；发布目录不包含当前 `.env` 或数据库内容。
 
 目标 Windows x64 电脑需预装并启动 Docker Desktop/Linux containers，Compose 至少 2.20。解压后依次运行 install.ps1、start.ps1、status.ps1，无需公网拉取镜像或安装开发依赖。首次安装生成独立密码和密钥；详细部署、更新、数据库迁移和备份恢复见 [部署说明](deploy/windows/部署说明.md)。发布 Compose 只开放网页端口，设置固定项目名、重启策略和日志轮转。脚本兼容 Windows PowerShell 5.1，保留原开发 Compose 方式。
 
