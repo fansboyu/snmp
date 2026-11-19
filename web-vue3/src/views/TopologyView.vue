@@ -302,6 +302,8 @@ const unmatched = computed(() =>
 const groups = computed(
   () => [...new Set(devices.value.map((d) => d.group_name).filter(Boolean))] as string[],
 )
+const layers = computed(() => [...new Set(nodes.value.map((n) => n.layer).filter(Boolean))] as string[])
+const layerFilter = ref('all')
 const selectedNode = computed(() =>
   selectedKind.value === 'node'
     ? nodes.value.find((n) => String(n.id) === selectedId.value)
@@ -317,6 +319,7 @@ const visibleNodes = computed(() =>
     (n) =>
       !hiddenBranches.value.has(String(n.id)) &&
       (group.value === 'all' || n.group_name === group.value) &&
+      (layerFilter.value === 'all' || n.layer === layerFilter.value) &&
       `${n.label} ${n.device_host || ''}`
         .toLowerCase()
         .includes(keyword.value.trim().toLowerCase()),
@@ -349,6 +352,16 @@ const sourcePorts = computed(() =>
 const targetPorts = computed(() =>
   ports.value.filter((p) => String(p.device_id) === String(targetNode.value?.device_id)),
 )
+const sourceLinkPort = computed(() => ports.value.find((p) => String(p.id) === String(selectedLink.value?.source_interface_id)))
+const targetLinkPort = computed(() => ports.value.find((p) => String(p.id) === String(selectedLink.value?.target_interface_id)))
+function evidenceAgeLabel(value?: string | null): string {
+  if (!value) return '无自动发现时间'
+  const ageMs = Date.now() - Date.parse(value)
+  if (!Number.isFinite(ageMs) || ageMs < 0) return '时间未知'
+  if (ageMs <= 20 * 60 * 1000) return '新鲜（20 分钟内）'
+  if (ageMs <= 6 * 60 * 60 * 1000) return '已过期（超过 20 分钟）'
+  return '长期未更新（超过 6 小时）'
+}
 const neighborPorts = computed(() =>
   ports.value.filter((p) => String(p.device_id) === neighborForm.device),
 )
@@ -1238,23 +1251,6 @@ watch(maximized, async () => {
         }}</el-button>
       </div>
     </div>
-    <el-alert v-if="data?.discovery" type="info" :closable="false" class="discovery-summary">
-      <template #title
-        >邻居发现：启用 {{ data.discovery.summary.total }} 台 · 已尝试
-        {{ data.discovery.summary.attempted }} 台 · 当前读取成功
-        {{ data.discovery.summary.successful }} 台 · 排队/采集中
-        {{ data.discovery.summary.pending }} 台</template
-      >
-      有效证据 {{ data.discovery.summary.evidence }} 条 · 待确认邻居
-      {{ data.discovery.summary.unmatched }} 条 · 端口映射不完整
-      {{ data.discovery.summary.unmapped_ports }} 条 · 当前自动连接
-      {{ data.discovery.summary.links }} 条 · 身份冲突
-      {{ data.discovery.summary.conflicts }} 条 · 弱名称待确认
-      {{ data.discovery.summary.needs_confirmation }} 条 · 单向证据连接
-      {{ data.discovery.summary.single_sided_links }} 条 · 过期证据
-      {{ data.discovery.summary.stale_evidence }} 条。
-      同步结果不会立即扫描网络；需要重新读取时请使用“发现诊断 / 立即采集”。
-    </el-alert>
     <el-alert
       v-if="dirty"
       type="warning"
@@ -1279,6 +1275,12 @@ watch(maximized, async () => {
           :key="g"
           :label="g"
           :value="g" /></el-select
+      ><el-select v-model="layerFilter" style="width: 130px" aria-label="按网络层级筛选"
+        ><el-option label="全部层级" value="all" /><el-option
+          v-for="layer in layers"
+          :key="layer"
+          :label="layerNames[layer] || layer"
+          :value="layer" /></el-select
       ><el-checkbox v-model="collapseBundles">折叠聚合成员</el-checkbox
       ><el-checkbox v-model="showHistoryLinks">显示历史连接</el-checkbox
       ><el-checkbox v-model="flowMode">流量模式</el-checkbox
@@ -1568,6 +1570,10 @@ watch(maximized, async () => {
           <p>
             B：{{ targetNode?.label }} · {{ selectedLink.target_interface_name || '端口未绑定' }}
           </p>
+          <p v-if="sourceLinkPort || targetLinkPort">
+            端口状态：A {{ sourceLinkPort ? statusNames[sourceLinkPort.oper_status || 'unknown'] || sourceLinkPort.oper_status : '未绑定' }}
+            · B {{ targetLinkPort ? statusNames[targetLinkPort.oper_status || 'unknown'] || targetLinkPort.oper_status : '未绑定' }}
+          </p>
           <p>
             证据：{{ selectedLink.protocols?.join(' / ') || '手工' }} ·
             {{
@@ -1578,7 +1584,10 @@ watch(maximized, async () => {
                   : '人工维护'
             }}
           </p>
-          <p>最近发现：{{ localTime(selectedLink.last_seen_at) }}</p>
+          <p>
+            自动发现证据：{{ selectedLink.evidence_count || 0 }} 条 · {{ evidenceAgeLabel(selectedLink.last_seen_at) }}
+          </p>
+          <p>最近发现：{{ selectedLink.last_seen_at ? localTime(selectedLink.last_seen_at) : '无自动发现记录（可能为手工连接）' }}</p>
           <p v-if="selectedLink.binding_locked">人工绑定已锁定，自动同步不会覆盖。</p>
           <template v-for="t in detail?.traffic" :key="t.port.id"
             ><el-divider /><strong
@@ -1893,7 +1902,7 @@ watch(maximized, async () => {
   overflow: hidden;
 }
 .topology-canvas {
-  height: calc(100vh - 245px);
+  height: calc(100vh - 175px);
   min-height: 600px;
   width: 100%;
 }
@@ -2031,8 +2040,8 @@ watch(maximized, async () => {
 }
 .topology-max .topology-canvas,
 .topology-max .topology-sidebar {
-  height: calc(100vh - 160px);
-  max-height: calc(100vh - 160px);
+  height: calc(100vh - 112px);
+  max-height: calc(100vh - 112px);
 }
 pre {
   font-size: 11px;

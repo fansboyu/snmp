@@ -172,9 +172,9 @@ onMounted(loadData)
 
 <template>
   <div v-loading="loading">
-    <div class="page-toolbar">
+    <div class="page-toolbar alerts-page-toolbar">
       <h2 class="page-title">告警中心</h2>
-      <div class="toolbar-actions">
+      <div class="toolbar-actions alerts-toolbar-actions">
         <el-button :icon="Message" @click="emailConfigVisible = true">邮件配置</el-button>
         <el-button :icon="ChatDotRound" @click="weComConfigVisible = true">企业微信应用配置</el-button>
         <el-select v-model="eventStatus" placeholder="事件状态" @change="loadData">
@@ -241,9 +241,9 @@ onMounted(loadData)
 
     <el-card class="page-card dashboard-row" shadow="never">
       <template #header>
-        <div class="card-header-row">
+        <div class="card-header-row notification-card-header">
           <span>通知发送记录</span>
-          <div class="toolbar-actions">
+          <div class="toolbar-actions notification-header-actions">
             <el-select v-model="notificationStatus" placeholder="通知状态" @change="loadData">
               <el-option label="全部" value="all" />
               <el-option label="待发送" value="pending" />
