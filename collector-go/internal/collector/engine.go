@@ -115,24 +115,57 @@ func (engine Engine) collectDevice(ctx context.Context, device Device, metrics [
 	client.Context = ctx
 	if err := client.Connect(); err != nil {
 		log.Printf("connect %s failed: %v", device.Host, err)
+		engine.recordMetricFailure(ctx, device, metrics, err)
 		return nil, nil
 	}
 	defer client.Conn.Close()
 	// Unreachable devices should not spend a full cycle walking every interface column.
 	if _, err := client.Get([]string{".1.3.6.1.2.1.1.2.0"}); err != nil {
 		log.Printf("probe %s failed: %v", device.Host, err)
+		engine.recordMetricFailure(ctx, device, metrics, err)
 		return nil, nil
 	}
 
-	samples := engine.collectScalarMetrics(device, client, scalarMetrics)
-	samples = append(samples, engine.collectWalkMetrics(device, client, walkMetrics)...)
-	interfaceSamples := engine.collectInterfaceMetrics(ctx, device, client, interfaceMetrics)
+	samples, scans := engine.collectScalarMetrics(device, client, scalarMetrics)
+	walkSamples, walkScans := engine.collectWalkMetrics(device, client, walkMetrics)
+	samples = append(samples, walkSamples...)
+	scans = append(scans, walkScans...)
+	interfaceSamples, interfaceScans := engine.collectInterfaceMetrics(ctx, device, client, interfaceMetrics)
+	scans = append(scans, interfaceScans...)
+	if store, ok := engine.Store.(interface {
+		SaveMetricScans(context.Context, []MetricScan) error
+	}); ok && len(scans) > 0 {
+		if err := store.SaveMetricScans(ctx, scans); err != nil {
+			log.Printf("save SNMP metric scan status device=%s failed: %v", device.Host, err)
+		}
+	}
 	return samples, interfaceSamples
 }
 
-func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) []MetricSample {
+func (engine Engine) recordMetricFailure(ctx context.Context, device Device, metrics []MetricDefinition, cause error) {
+	store, ok := engine.Store.(interface {
+		SaveMetricScans(context.Context, []MetricScan) error
+	})
+	if !ok || len(metrics) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	message := "SNMP 设备探测失败"
+	if cause != nil {
+		message = cause.Error()
+	}
+	scans := make([]MetricScan, 0, len(metrics))
+	for _, metric := range metrics {
+		scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: metric.TableOID, Status: "failed", Reason: message, CheckedAt: now})
+	}
+	if err := store.SaveMetricScans(ctx, scans); err != nil {
+		log.Printf("save SNMP probe failure device=%s failed: %v", device.Host, err)
+	}
+}
+
+func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) ([]MetricSample, []MetricScan) {
 	if len(metrics) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	oids := make([]string, 0, len(metrics))
@@ -143,16 +176,27 @@ func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, 
 	}
 
 	result, err := client.Get(oids)
+	now := time.Now().UTC()
 	if err != nil {
 		log.Printf("get %s failed: %v", device.Host, err)
-		return nil
+		scans := make([]MetricScan, 0, len(metrics))
+		for _, metric := range metrics {
+			scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: metric.OID, Status: "failed", Reason: err.Error(), CheckedAt: now})
+		}
+		return nil, scans
 	}
 
-	now := time.Now().UTC()
 	samples := make([]MetricSample, 0, len(result.Variables))
+	seen := make(map[int64]bool, len(metrics))
+	scans := make([]MetricScan, 0, len(metrics))
 	for _, variable := range result.Variables {
 		metric, ok := metricByOID[oidKey(variable.Name)]
 		if !ok {
+			continue
+		}
+		if variable.Type == gosnmp.NoSuchObject || variable.Type == gosnmp.NoSuchInstance || variable.Type == gosnmp.EndOfMibView {
+			scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: metric.OID, Status: "unsupported", Reason: "设备未提供此 OID 或当前 SNMP 视图不可见", CheckedAt: now})
+			seen[metric.ID] = true
 			continue
 		}
 		samples = append(samples, MetricSample{
@@ -162,18 +206,25 @@ func (engine Engine) collectScalarMetrics(device Device, client *gosnmp.GoSNMP, 
 			Value:      scaledSNMPValueText(metric, variable.Value),
 			CreatedAt:  now,
 		})
+		scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: metric.OID, Status: "success", Reason: "GET 成功", ItemCount: 1, CheckedAt: now, LastSuccessAt: now})
+		seen[metric.ID] = true
 	}
-
-	return samples
+	for _, metric := range metrics {
+		if !seen[metric.ID] {
+			scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: metric.OID, Status: "failed", Reason: "SNMP 响应中缺少请求的 OID", CheckedAt: now})
+		}
+	}
+	return samples, scans
 }
 
-func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) []MetricSample {
+func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) ([]MetricSample, []MetricScan) {
 	if len(metrics) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	now := time.Now().UTC()
 	samples := make([]MetricSample, 0, len(metrics))
+	scans := make([]MetricScan, 0, len(metrics))
 	for _, metric := range metrics {
 		tableOID := metric.TableOID
 		if tableOID == "" {
@@ -193,15 +244,22 @@ func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, me
 			return nil
 		}
 
-		if err := client.BulkWalk(tableOID, walkFn); err != nil {
+		walkErr := client.BulkWalk(tableOID, walkFn)
+		statusReason := "完整 Walk 成功"
+		if walkErr != nil {
 			values = values[:0]
-			log.Printf("bulk walk %s %s failed, fallback to walk: %v", device.Host, tableOID, err)
-			if walkErr := client.Walk(tableOID, walkFn); walkErr != nil {
+			log.Printf("bulk walk %s %s failed, fallback to walk: %v", device.Host, tableOID, walkErr)
+			walkErr = client.Walk(tableOID, walkFn)
+			if walkErr != nil {
+				values = values[:0]
 				log.Printf("walk %s %s failed: %v", device.Host, tableOID, walkErr)
+				scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: tableOID, Status: "failed", Reason: walkErr.Error(), CheckedAt: now})
 				continue
 			}
+			statusReason = "BulkWalk 失败，Walk 回退成功"
 		}
 		if len(values) == 0 {
+			scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: tableOID, Status: "empty", Reason: "完整查询成功但没有数值", CheckedAt: now, LastSuccessAt: now})
 			continue
 		}
 		samples = append(samples, MetricSample{
@@ -211,21 +269,29 @@ func (engine Engine) collectWalkMetrics(device Device, client *gosnmp.GoSNMP, me
 			Value:      formatMetricFloat(metric, aggregateValues(values, metric.AggregateMethod)*metricScale(metric)),
 			CreatedAt:  now,
 		})
+		scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: tableOID, Status: "success", Reason: statusReason, ItemCount: len(values), CheckedAt: now, LastSuccessAt: now})
 	}
 
-	return samples
+	return samples, scans
 }
 
-func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) []InterfaceMetricSample {
+func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device, client *gosnmp.GoSNMP, metrics []MetricDefinition) ([]InterfaceMetricSample, []MetricScan) {
 	now := time.Now().UTC()
 	samples := make([]InterfaceMetricSample, 0)
 	interfaceIDs := map[int]int64{}
+	scans := make([]MetricScan, 0, len(metrics))
 
 	for _, metric := range metrics {
 		tableOID := metric.TableOID
 		if tableOID == "" {
 			tableOID = metric.OID
 		}
+		type pendingRow struct {
+			ifIndex int
+			value   string
+			info    InterfaceInfo
+		}
+		pending := make([]pendingRow, 0)
 
 		walkFn := func(variable gosnmp.SnmpPDU) error {
 			if variable.Type == gosnmp.NoSuchObject || variable.Type == gosnmp.NoSuchInstance || variable.Type == gosnmp.EndOfMibView {
@@ -264,40 +330,47 @@ func (engine Engine) collectInterfaceMetrics(ctx context.Context, device Device,
 				}
 			}
 
-			interfaceID, ok := interfaceIDs[ifIndex]
-			if !ok || info.IfDescr != "" || info.OperStatus != "" || info.HasName || info.HasAlias || info.AdminStatus != "" || info.SpeedBps != nil {
-				var err error
-				interfaceID, err = engine.Store.UpsertInterface(ctx, info)
-				if err != nil {
-					return err
-				}
-				interfaceIDs[ifIndex] = interfaceID
-			}
-
-			samples = append(samples, InterfaceMetricSample{
-				DeviceID:    device.ID,
-				InterfaceID: interfaceID,
-				MetricID:    metric.ID,
-				MetricName:  metric.Name,
-				IfIndex:     ifIndex,
-				Value:       value,
-				CreatedAt:   now,
-			})
+			pending = append(pending, pendingRow{ifIndex: ifIndex, value: value, info: info})
 			return nil
 		}
 
 		sampleCount := len(samples)
 		err := client.BulkWalk(tableOID, walkFn)
+		statusReason := "完整 BulkWalk 成功"
 		if err != nil {
 			samples = samples[:sampleCount]
+			pending = pending[:0]
 			log.Printf("bulk walk %s %s failed, fallback to walk: %v", device.Host, tableOID, err)
 			if walkErr := client.Walk(tableOID, walkFn); walkErr != nil {
+				scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: tableOID, Status: "failed", Reason: walkErr.Error(), CheckedAt: now})
 				log.Printf("walk %s %s failed: %v", device.Host, tableOID, walkErr)
+				continue
 			}
+			statusReason = "BulkWalk 失败，Walk 回退成功"
 		}
+		for _, row := range pending {
+			interfaceID, ok := interfaceIDs[row.ifIndex]
+			if !ok || row.info.IfDescr != "" || row.info.OperStatus != "" || row.info.HasName || row.info.HasAlias || row.info.AdminStatus != "" || row.info.SpeedBps != nil {
+				var upsertErr error
+				interfaceID, upsertErr = engine.Store.UpsertInterface(ctx, row.info)
+				if upsertErr != nil {
+					log.Printf("upsert interface device=%d ifIndex=%d failed: %v", device.ID, row.ifIndex, upsertErr)
+					continue
+				}
+				interfaceIDs[row.ifIndex] = interfaceID
+			}
+			samples = append(samples, InterfaceMetricSample{DeviceID: device.ID, InterfaceID: interfaceID, MetricID: metric.ID, MetricName: metric.Name, IfIndex: row.ifIndex, Value: row.value, CreatedAt: now})
+		}
+		count := len(pending)
+		status := "success"
+		if count == 0 {
+			status = "empty"
+			statusReason = "完整查询成功但没有接口记录"
+		}
+		scans = append(scans, MetricScan{DeviceID: device.ID, MetricID: metric.ID, Name: metric.Name, OID: tableOID, Status: status, Reason: statusReason, ItemCount: count, CheckedAt: now, LastSuccessAt: now})
 	}
 
-	return samples
+	return samples, scans
 }
 
 func (engine Engine) collectNeighbors(device Device, client *gosnmp.GoSNMP) []NeighborInfo {

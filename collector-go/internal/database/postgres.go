@@ -20,6 +20,13 @@ type PostgresStore struct {
 	pool *pgxpool.Pool
 }
 
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
+}
+
 func Connect(ctx context.Context, databaseURL string) (*PostgresStore, error) {
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
@@ -791,9 +798,51 @@ func (store *PostgresStore) SaveSamples(ctx context.Context, samples []collector
 	return nil
 }
 
+func (store *PostgresStore) SaveMetricScans(ctx context.Context, scans []collector.MetricScan) error {
+	batch := &pgx.Batch{}
+	for _, scan := range scans {
+		batch.Queue(`insert into snmp_metric_scans(device_id,metric_id,metric_name,oid,status,reason,item_count,checked_at,last_success_at)
+		values($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		on conflict(device_id,metric_id) do update set metric_name=excluded.metric_name,oid=excluded.oid,status=excluded.status,
+		reason=excluded.reason,item_count=excluded.item_count,checked_at=excluded.checked_at,
+		last_success_at=coalesce(excluded.last_success_at,snmp_metric_scans.last_success_at)`,
+			scan.DeviceID, scan.MetricID, scan.Name, scan.OID, scan.Status, scan.Reason, scan.ItemCount, scan.CheckedAt, nullableTime(scan.LastSuccessAt))
+	}
+	results := store.pool.SendBatch(ctx, batch)
+	defer results.Close()
+	for range scans {
+		if _, err := results.Exec(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (store *PostgresStore) UpsertInterface(ctx context.Context, info collector.InterfaceInfo) (int64, error) {
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	var oldName, oldDescr string
+	lookupErr := tx.QueryRow(ctx, `select coalesce(if_name,''),coalesce(if_descr,'') from device_interfaces where device_id=$1 and if_index=$2 for update`, info.DeviceID, info.IfIndex).Scan(&oldName, &oldDescr)
+	if lookupErr == nil && ((info.HasName && oldName != "" && oldName != info.IfName) || (info.IfDescr != "" && oldDescr != "" && oldDescr != info.IfDescr)) {
+		newName, newDescr := oldName, oldDescr
+		if info.HasName {
+			newName = info.IfName
+		}
+		if info.IfDescr != "" {
+			newDescr = info.IfDescr
+		}
+		if _, err = tx.Exec(ctx, `insert into device_interface_identity_changes(device_id,if_index,old_if_name,new_if_name,old_if_descr,new_if_descr)
+			values($1,$2,$3,$4,$5,$6)`, info.DeviceID, info.IfIndex, oldName, newName, oldDescr, newDescr); err != nil {
+			return 0, err
+		}
+	} else if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+		return 0, lookupErr
+	}
 	var id int64
-	err := store.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		insert into device_interfaces (
 			device_id,
 			if_index,
@@ -816,13 +865,19 @@ func (store *PostgresStore) UpsertInterface(ctx context.Context, info collector.
 		returning id
 	`, info.DeviceID, info.IfIndex, info.IfDescr, info.IfName, info.IfAlias, info.OperStatus, info.LastSeenAt).Scan(&id)
 	if err == nil {
-		_, err = store.pool.Exec(ctx, `update device_interfaces set
+		_, err = tx.Exec(ctx, `update device_interfaces set
 			if_name = case when $2 then $3 else if_name end,
 			if_alias = case when $4 then $5 else if_alias end,
 			admin_status = coalesce(nullif($6,''), admin_status),
 			speed_bps = coalesce($7,speed_bps) where id=$1`, id, info.HasName, info.IfName, info.HasAlias, info.IfAlias, info.AdminStatus, info.SpeedBps)
 	}
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return id, nil
 }
 
 func (store *PostgresStore) SaveInterfaceSamples(ctx context.Context, samples []collector.InterfaceMetricSample) error {

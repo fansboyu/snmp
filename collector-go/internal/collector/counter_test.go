@@ -11,3 +11,9 @@ func TestCounterPreservesUint64(t *testing.T) {
 		t.Fatalf("alias changed: %s", got)
 	}
 }
+
+func TestCounterConversionBoundaries(t *testing.T) {
+	if got := scaledSNMPValueText(MetricDefinition{ValueType: "counter", Scale: 1}, uint64(1<<63+7)); got != "9223372036854775815" {
+		t.Fatalf("large counter was rounded or overflowed: %s", got)
+	}
+}

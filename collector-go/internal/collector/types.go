@@ -47,6 +47,18 @@ type MetricSample struct {
 	CreatedAt  time.Time
 }
 
+type MetricScan struct {
+	DeviceID      int64
+	MetricID      int64
+	Name          string
+	OID           string
+	Status        string
+	Reason        string
+	ItemCount     int
+	CheckedAt     time.Time
+	LastSuccessAt time.Time
+}
+
 type InterfaceInfo struct {
 	AdminStatus string
 	SpeedBps    *int64

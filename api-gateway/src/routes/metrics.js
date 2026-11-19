@@ -1,4 +1,37 @@
 export async function metricRoutes(app) {
+  app.get('/snmp-status', async (request, reply) => {
+    const deviceId = request.query.deviceId
+    if (deviceId != null && !/^\d+$/.test(String(deviceId))) {
+      reply.code(400)
+      return { message: 'invalid deviceId' }
+    }
+    const result = await app.db.query(`
+      select s.device_id,d.name as device_name,s.metric_id,s.metric_name,s.oid,s.status,s.reason,s.item_count,
+        s.checked_at,s.last_success_at
+      from snmp_metric_scans s join devices d on d.id=s.device_id
+      where ($1::bigint is null or s.device_id=$1)
+      order by s.checked_at desc,s.metric_name
+      limit 1000
+    `, [deviceId ?? null])
+    return result.rows
+  })
+
+  app.get('/interface-identity-changes', async (request, reply) => {
+    const deviceId = request.query.deviceId
+    if (deviceId != null && !/^\d+$/.test(String(deviceId))) {
+      reply.code(400)
+      return { message: 'invalid deviceId' }
+    }
+    const result = await app.db.query(`
+      select h.id,h.device_id,d.name as device_name,h.if_index,h.interface_id,
+        h.old_if_name,h.new_if_name,h.old_if_descr,h.new_if_descr,h.detected_at
+      from device_interface_identity_changes h join devices d on d.id=h.device_id
+      where ($1::bigint is null or h.device_id=$1)
+      order by h.detected_at desc limit 500
+    `, [deviceId ?? null])
+    return result.rows
+  })
+
   app.get('/definitions', async () => {
     const result = await app.db.query(`
       select
